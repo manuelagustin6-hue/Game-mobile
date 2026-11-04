@@ -83,11 +83,18 @@
 
   // Punto final real de una conducción: como máximo DRIBBLE_MAX, dentro de la cancha
   // y antes de cualquier obstáculo.
+  // Habilidades del jugador estrella (si el nivel las trae); el resto usa los valores base.
+  const isStar = (level, i) => level.starIdx != null && level.starIdx === i;
+  function rangeFor(level, i) { return (isStar(level, i) && level.starRange) || level.range || DEFAULT_RANGE; }
+  function dribbleMaxFor(level, i) { return (isStar(level, i) && level.starDribble) || DRIBBLE_MAX; }
+  function passSpeedFor(level, i) { return (isStar(level, i) && level.starPass) || SPEED; }
+
   function dribbleTarget(level, st, x, y) {
     const a = st.pos[st.holder];
+    const max = dribbleMaxFor(level, st.holder);
     let dx = x - a[0], dy = y - a[1];
     const len = Math.hypot(dx, dy);
-    if (len > DRIBBLE_MAX) { dx *= DRIBBLE_MAX / len; dy *= DRIBBLE_MAX / len; }
+    if (len > max) { dx *= max / len; dy *= max / len; }
     let bx = Math.max(BODY_R + 6, Math.min(COURT.w - BODY_R - 6, a[0] + dx));
     let by = Math.max(130, Math.min(COURT.h - BODY_R - 6, a[1] + dy));
     const hit = wallHit(level, a[0], a[1], bx, by, BODY_R);
@@ -117,7 +124,7 @@
   // Ejecuta un movimiento. move = {type:'pass', to} | {type:'dribble', x, y} | {type:'shot'}
   // Devuelve el tramo animable, el resultado y el estado siguiente.
   function step(level, st, move) {
-    const range = level.range || DEFAULT_RANGE;
+    const range = rangeFor(level, st.holder);
     const defs = level.defenders || [];
     const ap = st.pos[st.holder];
     const a = { x: ap[0], y: ap[1] };
@@ -144,7 +151,7 @@
     if (move.type === 'pass') {
       const bp = st.pos[move.to];
       const b = { x: bp[0], y: bp[1] };
-      const dur = dist(a.x, a.y, b.x, b.y) / SPEED;
+      const dur = dist(a.x, a.y, b.x, b.y) / passSpeedFor(level, st.holder);
       const hit = wallHit(level, a.x, a.y, b.x, b.y);
       const limit = hit === null ? 1 : hit;
       const lb = { x: a.x + (b.x - a.x) * limit, y: a.y + (b.y - a.y) * limit };
@@ -221,7 +228,7 @@
   const api = {
     COURT, HOOP, BALL_R, REACH, BLOCK_R, SPEED, DRIBBLE_SPEED, DRIBBLE_MAX, DRIBBLE_MIN, BODY_R,
     SHOT_TIME, DEFAULT_RANGE, WALL_T,
-    dist, pointSegDist, defenderPos, wallHit,
+    dist, pointSegDist, defenderPos, wallHit, rangeFor, dribbleMaxFor, passSpeedFor,
     initState, cloneState, dribbleTarget, step, simulate, solve, stars,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

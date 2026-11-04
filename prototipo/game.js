@@ -56,6 +56,7 @@
     unlocked: 0, stars: [], coins: 60,
     lives: LIFE_MAX, lifeTs: Date.now(),
     premium: false, sinceAd: 0, called: {},
+    me: null, skills: { tiro: 0, pase: 0, manejo: 0 },
   };
   let S = load();
   function load() {
@@ -231,29 +232,14 @@
   // ---------------------------------------------------------------- Inicio
   function renderHome() {
     drawHero();
-    if (!S.country) { $('home-team').innerHTML = ''; return; }
+    if (!S.country || !S.me) { $('home-team').innerHTML = ''; return; }
     const i = Math.min(S.unlocked, LEVELS.length - 1);
     const t = myTeam(LEVELS[i].stage === 'seleccion' ? Math.max(0, i - 1) : i);
-    const c = country(S.country);
-    $('home-team').innerHTML = `${crest(t.colors)}
-      <div class="meta"><div class="label">Juegas en</div><div class="name">${t.name}</div>
-      <div class="label" style="text-transform:none;letter-spacing:0">${t.flag} ${t.sub} · Selección de ${c.name}</div></div>`;
+    $('home-team').innerHTML = `<canvas class="mini" id="home-me"></canvas>
+      <div class="meta"><div class="label">Tu jugador · Media ${rating()}</div><div class="name">${esc(S.me.name)} <span style="color:var(--muted)">#${S.me.num}</span></div>
+      <div class="label" style="text-transform:none;letter-spacing:0">${t.flag} ${t.name} · ${t.sub}</div></div>`;
+    drawPortrait($('home-me'), starLook(t.colors), 'idle');
     $('btn-play').textContent = S.unlocked >= LEVELS.length ? 'Jugar de nuevo' : `Jugar nivel ${i + 1}`;
-  }
-
-  function teamModal() {
-    const c = country(S.country);
-    const k1 = club(S.club1.id);
-    const k2 = S.club2 ? club(S.club2.id) : null;
-    modal(`
-      <span class="eyebrow">Mi equipo</span>
-      <h2>Tu carrera</h2>
-      <div class="offer">${crest(k1.colors)}<div class="meta"><div class="name">${k1.name}</div><div class="league">Temporada 1 · Liga de ${country(S.club1.country).name}</div></div></div>
-      ${k2 ? `<div class="offer">${crest(k2.colors)}<div class="meta"><div class="name">${k2.name}</div><div class="league">Temporada 2 · Liga de ${country(S.club2.country).name}</div></div></div>`
-        : '<p class="note">Al terminar la temporada 1 recibes ofertas de clubes de otros países.</p>'}
-      <div class="offer"><span class="flag" style="font-size:34px">${c.flag}</span><div class="meta"><div class="name">Selección de ${c.name}</div><div class="league">Te convoca en los niveles marcados como Selección</div></div></div>
-      <div class="actions"><button class="btn alt" id="m-country">Cambiar nacionalidad</button><button class="btn" id="m-close">Listo</button></div>`,
-    { 'm-close': closeModal, 'm-country': () => chooseCountry(false, renderHome) });
   }
 
   function premiumModal() {
@@ -310,10 +296,11 @@
   }
 
   // ---------------------------------------------------------------- Personajes
-  const SKINS = ['#F3CFB3', '#E3B08A', '#C98E62', '#A26B45', '#7A4C2E', '#5B3720'];
-  const HAIRS = ['#17110D', '#2E1D12', '#5A3A22', '#8C5A2E', '#C9974F', '#E3CF9A'];
-  const STYLES = ['short', 'afro', 'buzz', 'band', 'pony', 'short', 'bald', 'band'];
-  const NUMS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+  const SKINS = ['#F2D0B5', '#E1B48F', '#C99068', '#A86F48', '#7D4F31', '#5A3520'];
+  const HAIRS = ['#14100D', '#2B1C13', '#4E3220', '#7A4E2B', '#B48450', '#D8C08A'];
+  const STYLES = ['corto', 'rapado', 'rulos', 'trenzas', 'mono', 'pelado'];
+  const STYLE_NAMES = { corto: 'Corto', rapado: 'Rapado', rulos: 'Rulos', trenzas: 'Trenzas', mono: 'Moño', pelado: 'Pelado' };
+  const NUMS = [4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 21];
   const SURNAMES = ['Ramos', 'Silva', 'Costa', 'Díaz', 'Medina', 'Rojas', 'Vega', 'Ortiz', 'Castro', 'Luna', 'Torres', 'Navarro', 'Molina', 'Suárez', 'Herrera', 'Paz'];
   function hash(str) {
     let h = 2166136261;
@@ -329,10 +316,166 @@
       skin: SKINS[h % SKINS.length],
       hair: HAIRS[(h >>> 4) % HAIRS.length],
       style: STYLES[(h >>> 8) % STYLES.length],
+      beard: (h >>> 12) % 4 === 0,
+      h: 0.95 + ((h >>> 14) % 10) / 100,
       num: NUMS[((base >>> 3) + i * 5) % NUMS.length],
       name: SURNAMES[((base >>> 7) + i * 7) % SURNAMES.length],
       phase: (h % 100) / 37,
     };
+  }
+
+  // ---------------------------------------------------------------- Tu jugador estrella
+  const SKILLS = [
+    { id: 'tiro', name: 'Tiro', help: 'Tiras desde más lejos que la línea de triple.' },
+    { id: 'pase', name: 'Pase', help: 'Tus pases viajan más rápido.' },
+    { id: 'manejo', name: 'Manejo', help: 'Conduces la pelota más distancia por movimiento.' },
+  ];
+  const SKILL_MAX = 3;
+  const SKILL_COST = [80, 160, 260];
+  function skills() { return Object.assign({ tiro: 0, pase: 0, manejo: 0 }, S.skills || {}); }
+  function starStats() {
+    const k = skills();
+    return {
+      starRange: E.DEFAULT_RANGE + 14 * k.tiro,
+      starPass: E.SPEED + 45 * k.pase,
+      starDribble: E.DRIBBLE_MAX + 18 * k.manejo,
+    };
+  }
+  function rating() {
+    const k = skills();
+    return Math.min(99, 62 + 3 * (k.tiro + k.pase + k.manejo) + Math.floor(totalStars() / 4));
+  }
+  function defaultMe() { return { name: '', num: 10, skin: 2, hair: 0, hairColor: 0, beard: false }; }
+  function starLook(colors, m) {
+    m = m || S.me || defaultMe();
+    return {
+      colors,
+      skin: SKINS[m.skin], hair: HAIRS[m.hairColor], style: STYLES[m.hair], beard: !!m.beard,
+      h: 1.03, num: m.num, name: m.name || 'Tú', phase: 0, star: true,
+    };
+  }
+
+  // Retrato de un personaje en un <canvas> de la interfaz.
+  function drawPortrait(canvas, look, pose) {
+    const r = canvas.getBoundingClientRect();
+    const w = r.width || canvas.width, h = r.height || canvas.height;
+    const k = Math.min(3, window.devicePixelRatio || 1);
+    canvas.width = Math.round(w * k); canvas.height = Math.round(h * k);
+    const g = canvas.getContext('2d');
+    const grd = g.createLinearGradient(0, 0, 0, canvas.height);
+    grd.addColorStop(0, '#22385F'); grd.addColorStop(1, '#101D36');
+    g.fillStyle = grd; g.fillRect(0, 0, canvas.width, canvas.height);
+    const s = (h * 0.86) / 84;
+    g.setTransform(k * s, 0, 0, k * s, k * w / 2, k * h * 0.95);
+    drawChar(g, { x: 0, y: 0, pose: pose || 'dribble', look }, 0);
+    if ((pose || 'dribble') === 'dribble') drawBall(g, 14, -1, 9, .9);
+  }
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+  // Colores con los que se ve tu jugador fuera de la cancha (su club actual).
+  function currentColors() {
+    if (!S.club1) return ['#B3202A', '#F5F0E6'];
+    const i = Math.min(S.unlocked, LEVELS.length - 1);
+    return myTeam(LEVELS[i].stage === 'seleccion' ? Math.max(0, i - 1) : i).colors;
+  }
+
+  function createPlayer(firstTime, onDone) {
+    const d = Object.assign(defaultMe(), S.me || {});
+    const colors = currentColors();
+    modal(`
+      <span class="eyebrow">${firstTime ? 'Crea tu jugador' : 'Editar jugador'}</span>
+      <h2>Tu jugador estrella</h2>
+      <div class="creator">
+        <canvas class="portrait" id="cr-prev"></canvas>
+        <div class="fields">
+          <label class="field" for="cr-name"><span>Nombre</span>
+            <input id="cr-name" maxlength="14" autocomplete="off" placeholder="Tu nombre" value="${esc(d.name)}"></label>
+          <div class="field"><span>Número</span>
+            <div class="stepper"><button id="cr-minus" aria-label="Bajar número">−</button><b id="cr-num">${d.num}</b><button id="cr-plus" aria-label="Subir número">+</button></div></div>
+        </div>
+      </div>
+      <div class="field"><span>Piel</span><div class="swatches" data-k="skin">
+        ${SKINS.map((s, i) => `<button class="sw${i === d.skin ? ' sel' : ''}" data-v="${i}" style="background:${s}" aria-label="Tono de piel ${i + 1}"></button>`).join('')}</div></div>
+      <div class="field"><span>Peinado</span><div class="chips" data-k="hair">
+        ${STYLES.map((s, i) => `<button class="chip${i === d.hair ? ' sel' : ''}" data-v="${i}">${STYLE_NAMES[s]}</button>`).join('')}</div></div>
+      <div class="field"><span>Color de pelo</span><div class="swatches" data-k="hairColor">
+        ${HAIRS.map((s, i) => `<button class="sw${i === d.hairColor ? ' sel' : ''}" data-v="${i}" style="background:${s}" aria-label="Color de pelo ${i + 1}"></button>`).join('')}</div></div>
+      <div class="field"><span>Barba</span><div class="chips" data-k="beard">
+        <button class="chip${!d.beard ? ' sel' : ''}" data-v="0">No</button><button class="chip${d.beard ? ' sel' : ''}" data-v="1">Sí</button></div></div>
+      <p class="note bad-note" id="cr-err" hidden>Escribe un nombre para tu jugador.</p>
+      <div class="actions"><button class="btn" id="cr-ok">${firstTime ? 'Empezar mi carrera' : 'Guardar'}</button>
+        ${firstTime ? '' : '<button class="btn alt" id="cr-cancel">Cancelar</button>'}</div>`,
+    {
+      'cr-ok': () => {
+        const name = $('cr-name').value.trim();
+        if (!name) { $('cr-err').hidden = false; $('cr-name').focus(); return; }
+        d.name = name;
+        S.me = d; save(); closeModal(); onDone && onDone();
+      },
+      'cr-cancel': closeModal,
+      'cr-minus': () => { d.num = (d.num + 99) % 100; $('cr-num').textContent = d.num; paint(); },
+      'cr-plus': () => { d.num = (d.num + 1) % 100; $('cr-num').textContent = d.num; paint(); },
+    });
+    const paint = () => drawPortrait($('cr-prev'), starLook(colors, d), 'dribble');
+    $('sheet').querySelectorAll('[data-k]').forEach((box) => {
+      const key = box.dataset.k;
+      box.querySelectorAll('button').forEach((b) => {
+        b.onclick = () => {
+          const v = +b.dataset.v;
+          d[key] = key === 'beard' ? v === 1 : v;
+          box.querySelectorAll('button').forEach((o) => o.classList.toggle('sel', o === b));
+          paint();
+        };
+      });
+    });
+    $('cr-name').oninput = () => { $('cr-err').hidden = true; };
+    paint();
+  }
+
+  function playerModal() {
+    const me = S.me, c = country(S.country);
+    const k = skills();
+    const k1 = club(S.club1.id);
+    const k2 = S.club2 ? club(S.club2.id) : null;
+    modal(`
+      <span class="eyebrow">Mi jugador</span>
+      <div class="me-head"><canvas class="portrait" id="me-portrait"></canvas>
+        <div class="meta"><h2>${esc(me.name)}</h2>
+          <div class="me-sub">#${me.num} · ${c.flag} ${c.name}</div>
+          <div class="rating"><b>${rating()}</b><span>Media</span></div></div></div>
+      <h3 class="sec">Entrenamiento</h3>
+      ${SKILLS.map((sk) => {
+        const lvl = k[sk.id], cost = SKILL_COST[lvl];
+        return `<div class="skill"><div class="meta"><div class="name">${sk.name}
+          <span class="pips">${[0, 1, 2].map((i) => `<i class="${i < lvl ? 'on' : ''}"></i>`).join('')}</span></div>
+          <div class="league">${sk.help}</div></div>
+          ${lvl >= SKILL_MAX ? '<span class="maxed">Máximo</span>'
+            : `<button class="btn gold small" id="m-up-${sk.id}" ${S.coins < cost ? 'disabled' : ''}><span class="coin"></span> ${cost}</button>`}</div>`;
+      }).join('')}
+      <p class="note">Las mejoras solo valen para tu jugador. Ganas monedas al superar niveles.</p>
+      <h3 class="sec">Carrera</h3>
+      <div class="offer">${crest(k1.colors)}<div class="meta"><div class="name">${k1.name}</div><div class="league">Temporada 1 · Liga de ${country(S.club1.country).name}</div></div></div>
+      ${k2 ? `<div class="offer">${crest(k2.colors)}<div class="meta"><div class="name">${k2.name}</div><div class="league">Temporada 2 · Liga de ${country(S.club2.country).name}</div></div></div>`
+        : '<p class="note">Al terminar la temporada 1 recibes ofertas de clubes de otros países.</p>'}
+      <div class="offer"><span class="flag" style="font-size:34px">${c.flag}</span><div class="meta"><div class="name">Selección de ${c.name}</div><div class="league">Te convoca en los niveles marcados como Selección</div></div></div>
+      <div class="actions">
+        <button class="btn" id="m-close">Listo</button>
+        <button class="btn alt" id="m-look">Editar jugador</button>
+        <button class="btn alt" id="m-country">Cambiar nacionalidad</button>
+      </div>`,
+    Object.assign({
+      'm-close': closeModal,
+      'm-look': () => createPlayer(false, () => { renderHome(); playerModal(); }),
+      'm-country': () => chooseCountry(false, () => { renderHome(); playerModal(); }),
+    }, Object.fromEntries(SKILLS.map((sk) => ['m-up-' + sk.id, () => {
+      const lvl = skills()[sk.id], cost = SKILL_COST[lvl];
+      if (lvl >= SKILL_MAX || S.coins < cost) return;
+      S.coins -= cost;
+      S.skills = Object.assign(skills(), { [sk.id]: lvl + 1 });
+      save(); refreshHud(); renderHome(); playerModal();
+    }]))));
+    drawPortrait($('me-portrait'), starLook(currentColors()), 'dribble');
   }
 
   // ---------------------------------------------------------------- Partida
@@ -352,9 +495,14 @@
       S.called[i] = true; save();
       return callUp(i, () => startLevel(i));
     }
-    G.idx = i; G.level = lv; G.solution = E.solve(lv);
+    G.idx = i; G.level = Object.assign({}, lv, { starIdx: 0 }, starStats()); G.solution = E.solve(lv);
     G.mine = myTeam(i); G.rival = rivalTeam(i);
-    G.myLooks = lv.players.map((_, k) => lookFor(G.mine, k));
+    G.myLooks = lv.players.map((_, k) => {
+      if (k === 0) return starLook(G.mine.colors);
+      const lk = lookFor(G.mine, k);
+      if (lk.num === S.me.num) lk.num = (lk.num + 20) % 100;
+      return lk;
+    });
     G.rivalLooks = (lv.defenders || []).map((_, k) => lookFor(G.rival, k));
     G.hint = false;
     resetPlay();
@@ -392,6 +540,7 @@
         <div class="side right"><span>${G.rival.name}</span>${crest(G.rival.colors, true)}</div>
       </div>
       <p>${lv.tip}</p>
+      <p class="note">Empiezas tú con la pelota: <b style="color:var(--gold)">★ ${esc(S.me.name)}</b>.</p>
       <div class="facts">
         <div class="fact"><b>${min === 0 ? 'Tiro directo' : min + ' ' + movesWord(min)}</b><span>para 3 estrellas</span></div>
         <div class="fact"><b>${(lv.defenders || []).length}</b><span>defensores</span></div>
@@ -489,7 +638,7 @@
     modal(`
       <span class="eyebrow">Convocatoria</span>
       <div style="font-size:64px;line-height:1">${c.flag}</div>
-      <h2>Te convocó la selección de ${c.name}</h2>
+      <h2>${esc(S.me.name)}, te convocó la selección de ${c.name}</h2>
       <p>${i === LEVELS.length - 1 ? 'Juegas la final' : 'Juegas un partido internacional'} contra ${rival.name}. Defiendes la camiseta de tu país.</p>
       <div class="actions"><button class="btn" id="m-ok">Vestir la camiseta</button></div>`,
     { 'm-ok': () => { closeModal(); onDone(); } });
@@ -507,8 +656,8 @@
     }));
     modal(`
       <span class="eyebrow">Fin de la temporada 1</span>
-      <h2>Tienes ofertas de fichaje</h2>
-      <p>Elige tu nuevo club. Cada uno juega en otra liga y te paga una prima de fichaje en monedas.</p>
+      <h2>Tres clubes quieren ficharte</h2>
+      <p>Tu temporada llamó la atención, ${esc(S.me.name)}. Elige tu nuevo club: cada uno juega en otra liga y te paga una prima de fichaje en monedas.</p>
       ${offers.map((o, k) => `<button class="offer" id="m-o${k}">${crest(o.club.colors)}<div class="meta"><div class="name">${o.club.name}</div><div class="league">${o.country.flag} Liga de ${o.country.name}</div></div><span class="bonus">+${o.bonus}</span></button>`).join('')}`,
     Object.fromEntries(offers.map((o, k) => ['m-o' + k, () => {
       S.club2 = { id: o.club.id, country: o.country.code };
@@ -719,130 +868,229 @@
     g.closePath();
   }
 
-  // Personaje de pie con los pies en (c.x, c.y).
+  // Aclara (amt > 0) u oscurece (amt < 0) un color.
+  function shade(hex, amt) {
+    const [r, gg, b] = hexRgb(hex);
+    const f = amt < 0 ? (v) => Math.round(v * (1 + amt)) : (v) => Math.round(v + (255 - v) * amt);
+    return `rgb(${f(r)},${f(gg)},${f(b)})`;
+  }
+
+  // Articulación de dos tramos (brazo o pierna): devuelve el codo o la rodilla.
+  function ik(sx, sy, hx, hy, a, b, side) {
+    let dx = hx - sx, dy = hy - sy;
+    let d = Math.hypot(dx, dy);
+    const maxd = a + b - 0.01;
+    if (d > maxd) { dx *= maxd / d; dy *= maxd / d; d = maxd; hx = sx + dx; hy = sy + dy; }
+    d = Math.max(0.01, d);
+    const cosA = (a * a + d * d - b * b) / (2 * a * d);
+    const A = Math.acos(Math.max(-1, Math.min(1, cosA)));
+    const ang = Math.atan2(dy, dx) + side * A;
+    return { ex: sx + Math.cos(ang) * a, ey: sy + Math.sin(ang) * a, hx, hy };
+  }
+
+  function limb(g, x1, y1, x2, y2, w, fill, edge) {
+    g.lineCap = 'round';
+    g.strokeStyle = edge; g.lineWidth = w + 1.1;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.strokeStyle = fill; g.lineWidth = w;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  }
+
+  function starShape(g, x, y, r) {
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const rr = i % 2 ? r * .45 : r;
+      g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    g.closePath();
+  }
+
+  // Personaje con proporciones realistas, con los pies en (c.x, c.y).
   // pose: idle | run | guard | dribble | pass | catch | shoot
   function drawChar(g, c, now) {
     const L = c.look;
-    const t = now / 1000 + L.phase;
+    const t = now / 1000 + (L.phase || 0);
     const run = c.pose === 'run';
-    const bob = run ? Math.abs(Math.sin(t * 14)) * 1.6 : Math.sin(t * 2.6) * 0.6;
+    const cyc = t * 11;
+    const bob = run ? Math.abs(Math.sin(cyc)) * 1.6 : Math.sin(t * 2.4) * 0.45;
     const jump = c.jump || 0;
-    const x = c.x, y = c.y - jump - bob;
-    const outline = 'rgba(20,12,6,.45)';
+    const skin = L.skin, skinD = shade(skin, -0.28), skinL = shade(skin, 0.14);
+    const jer = L.colors[0], trim = L.colors[1];
+    const edge = 'rgba(18,10,4,.5)';
+
     g.save();
     if (c.alpha != null) g.globalAlpha = c.alpha;
-
-    // Sombra y aro de selección en el piso
-    g.fillStyle = 'rgba(0,0,0,.28)';
-    g.beginPath(); g.ellipse(c.x + 1, c.y, 12 - jump * .2, 4.5, 0, 0, Math.PI * 2); g.fill();
+    // Sombra y aro en el piso
+    g.fillStyle = 'rgba(0,0,0,.3)';
+    g.beginPath(); g.ellipse(c.x + 1.5, c.y + .5, 11 - jump * .15, 4, 0, 0, Math.PI * 2); g.fill();
     if (c.ring) {
-      g.strokeStyle = c.ring; g.lineWidth = 2.5;
-      g.beginPath(); g.ellipse(c.x, c.y, 18, 7.5, 0, 0, Math.PI * 2); g.stroke();
+      g.strokeStyle = c.ring; g.lineWidth = 2.4;
+      g.beginPath(); g.ellipse(c.x, c.y, 17, 6.5, 0, 0, Math.PI * 2); g.stroke();
     }
+    g.translate(c.x, c.y - jump);
+    g.scale(L.h || 1, L.h || 1);
 
-    // Piernas y zapatillas
-    const stride = run ? Math.sin(t * 14) * 3.5 : 0;
-    [[-4, stride], [4, -stride]].forEach(([dx, s]) => {
-      const fx = x + dx + s * .35, fy = y - 3 - Math.max(0, s) * .5;
-      g.strokeStyle = L.skin; g.lineWidth = 4.6; g.lineCap = 'round';
-      g.beginPath(); g.moveTo(x + dx, y - 15); g.lineTo(fx, fy); g.stroke();
-      g.fillStyle = '#1F1F24';
-      g.beginPath(); g.ellipse(fx, fy + 1, 3.8, 2.4, 0, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#F4F4F4';
-      g.fillRect(fx - 2.4, fy + .2, 4.8, 1);
+    // Piernas: cadera -> rodilla -> tobillo
+    const tuck = jump > 3 ? 5 : 0;
+    [-1, 1].forEach((s) => {
+      const ph = run ? Math.sin(cyc + (s > 0 ? Math.PI : 0)) : 0;
+      const lift = run ? Math.max(0, ph) * 4.5 : tuck;
+      const fx = s * 4.4 + (run ? ph * 1.3 : 0);
+      const fy = -lift;
+      const hip = { x: s * 4, y: -29 - bob };
+      const k = ik(hip.x, hip.y, fx, fy - 3.5, 13.4, 13, -s);
+      limb(g, hip.x, hip.y, k.ex, k.ey, 5.6, skin, skinD);
+      limb(g, k.ex, k.ey, k.hx, k.hy, 4.4, skin, skinD);
+      // Media
+      limb(g, k.hx + (k.ex - k.hx) * .32, k.hy + (k.ey - k.hy) * .32, k.hx, k.hy, 4.5, '#F1F1EE', 'rgba(0,0,0,.25)');
+      // Zapatilla
+      rrect(g, fx - 4.2, fy - 4.3, 8.6, 4.4, 2);
+      g.fillStyle = '#1E1E24'; g.fill();
+      g.fillStyle = '#ECECEC'; g.fillRect(fx - 4.2, fy - 1.1, 8.6, 1.1);
+      g.fillStyle = trim; g.fillRect(fx - 1.8, fy - 3.6, 3.2, 1.2);
     });
 
-    // Pelo de atrás (afro y coleta)
-    if (L.style === 'afro') { g.fillStyle = L.hair; g.beginPath(); g.arc(x, y - 48, 11.5, 0, Math.PI * 2); g.fill(); }
-    if (L.style === 'pony') { g.fillStyle = L.hair; g.beginPath(); g.arc(x, y - 57, 4.2, 0, Math.PI * 2); g.fill(); }
+    // Short largo de básquet
+    const w = -33 - bob;
+    g.beginPath();
+    g.moveTo(-8.6, w); g.lineTo(8.6, w); g.lineTo(10.3, w + 15.5); g.lineTo(1.3, w + 16);
+    g.lineTo(0, w + 12); g.lineTo(-1.3, w + 16); g.lineTo(-10.3, w + 15.5); g.closePath();
+    let grd = g.createLinearGradient(-10, 0, 10, 0);
+    grd.addColorStop(0, shade(jer, 0.12)); grd.addColorStop(1, shade(jer, -0.22));
+    g.fillStyle = grd; g.fill();
+    g.strokeStyle = edge; g.lineWidth = .8; g.stroke();
+    g.strokeStyle = trim; g.lineWidth = 1.6;
+    g.beginPath(); g.moveTo(-8.4, w + 1.5); g.lineTo(-10, w + 15); g.stroke();
+    g.beginPath(); g.moveTo(8.4, w + 1.5); g.lineTo(10, w + 15); g.stroke();
+    g.strokeStyle = shade(jer, -0.3); g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(-8.4, w + .9); g.lineTo(8.4, w + .9); g.stroke();
 
-    // Short
-    rrect(g, x - 9.5, y - 24, 19, 11, 3);
-    g.fillStyle = L.colors[0]; g.fill();
-    g.strokeStyle = outline; g.lineWidth = 1; g.stroke();
-    g.fillStyle = L.colors[1];
-    g.fillRect(x - 9.5, y - 15.5, 19, 1.6);
-
-    // Camiseta
-    rrect(g, x - 10.5, y - 38, 21, 17, 5);
-    g.fillStyle = L.colors[0]; g.fill();
-    g.strokeStyle = outline; g.lineWidth = 1; g.stroke();
-    g.strokeStyle = L.colors[1]; g.lineWidth = 1.8;
-    g.beginPath(); g.arc(x, y - 38, 4.4, 0.15, Math.PI - 0.15); g.stroke();
-    g.beginPath(); g.moveTo(x - 9.5, y - 35); g.quadraticCurveTo(x - 7, y - 31, x - 9.8, y - 27); g.stroke();
-    g.beginPath(); g.moveTo(x + 9.5, y - 35); g.quadraticCurveTo(x + 7, y - 31, x + 9.8, y - 27); g.stroke();
-    g.fillStyle = L.colors[1];
-    g.font = '800 10px "Barlow Condensed", "Arial Narrow", sans-serif';
+    // Torso: hombros a la vista y camiseta sin mangas
+    const y0 = -52 - bob;
+    g.fillStyle = skin;
+    g.beginPath(); g.moveTo(-10.4, y0 + 2); g.lineTo(10.4, y0 + 2); g.lineTo(8.2, y0 + 17); g.lineTo(-8.2, y0 + 17); g.closePath(); g.fill();
+    g.fillStyle = skinL;
+    g.beginPath(); g.ellipse(-9.4, y0 + 3, 3.4, 3, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = skin;
+    g.beginPath(); g.ellipse(9.4, y0 + 3, 3.4, 3, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath();
+    g.moveTo(-6, y0); g.lineTo(-3.4, y0);
+    g.quadraticCurveTo(0, y0 + 6.2, 3.4, y0); g.lineTo(6, y0);
+    g.quadraticCurveTo(6.3, y0 + 7.5, 9.2, y0 + 10); g.lineTo(8.6, y0 + 19.5);
+    g.lineTo(-8.6, y0 + 19.5); g.lineTo(-9.2, y0 + 10);
+    g.quadraticCurveTo(-6.3, y0 + 7.5, -6, y0); g.closePath();
+    grd = g.createLinearGradient(-9, 0, 9, 0);
+    grd.addColorStop(0, shade(jer, 0.15)); grd.addColorStop(.55, jer); grd.addColorStop(1, shade(jer, -0.25));
+    g.fillStyle = grd; g.fill();
+    g.strokeStyle = edge; g.lineWidth = .8; g.stroke();
+    g.strokeStyle = trim; g.lineWidth = 1.2;
+    g.beginPath(); g.moveTo(-3.4, y0 + .3); g.quadraticCurveTo(0, y0 + 6.4, 3.4, y0 + .3); g.stroke();
+    g.beginPath(); g.moveTo(6, y0 + .3); g.quadraticCurveTo(6.3, y0 + 7.5, 9, y0 + 9.8); g.stroke();
+    g.beginPath(); g.moveTo(-6, y0 + .3); g.quadraticCurveTo(-6.3, y0 + 7.5, -9, y0 + 9.8); g.stroke();
+    g.fillStyle = trim;
+    g.font = '700 8.5px "Barlow Condensed", "Arial Narrow", sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(String(L.num), x, y - 28.5);
+    g.fillText(String(L.num), 0, y0 + 11.5);
 
-    // Brazos
-    const sw = run ? Math.sin(t * 14) * 3 : 0;
-    const hands = {
-      idle: [[-12.5, -22], [12.5, -22]],
-      run: [[-11.5, -24 + sw], [11.5, -24 - sw]],
-      guard: [[-20, -40], [20, -40]],
-      dribble: [[-12.5, -23], [14, -19]],
-      pass: [[-7, -29], [7, -29]],
-      catch: [[-9, -42], [9, -42]],
-      shoot: [[-3.5, -57], [4, -58]],
-    }[c.pose] || [[-12.5, -22], [12.5, -22]];
-    [[-9, hands[0]], [9, hands[1]]].forEach(([sx, h]) => {
-      g.strokeStyle = L.skin; g.lineWidth = 4; g.lineCap = 'round';
-      g.beginPath(); g.moveTo(x + sx, y - 35); g.lineTo(x + h[0], y + h[1]); g.stroke();
-      g.fillStyle = L.skin;
-      g.beginPath(); g.arc(x + h[0], y + h[1], 2.5, 0, Math.PI * 2); g.fill();
+    // Brazos: hombro -> codo -> mano
+    const pose = c.pose;
+    [-1, 1].forEach((s) => {
+      const sw = run ? Math.sin(cyc + (s > 0 ? 0 : Math.PI)) : 0;
+      let hx, hy;
+      switch (pose) {
+        case 'run': hx = s * 10.5 + sw * 1.5; hy = -31 + sw * 3.5; break;
+        case 'guard': hx = s * 20; hy = -47; break;
+        case 'dribble': if (s > 0) { hx = 13; hy = -23; } else { hx = -11.5; hy = -28.5; } break;
+        case 'pass': hx = s * 5.5; hy = -38; break;
+        case 'catch': hx = s * 6.5; hy = -57; break;
+        case 'shoot': if (s > 0) { hx = 2.5; hy = -77; } else { hx = -2.5; hy = -72; } break;
+        default: hx = s * 11.5; hy = -27.5;
+      }
+      const sx = s * 9.6, sy = y0 + 3.2;
+      const k = ik(sx, sy, hx, hy - bob, 10.6, 10, pose === 'guard' || pose === 'catch' || pose === 'shoot' ? s : -s);
+      limb(g, sx, sy, k.ex, k.ey, 4.4, skin, skinD);
+      limb(g, k.ex, k.ey, k.hx, k.hy, 3.7, skin, skinD);
+      g.fillStyle = skin; g.strokeStyle = skinD; g.lineWidth = .7;
+      g.beginPath(); g.arc(k.hx, k.hy, 2.3, 0, Math.PI * 2); g.fill(); g.stroke();
     });
-    // Mangas
-    g.fillStyle = L.colors[0];
-    g.beginPath(); g.arc(x - 9, y - 35, 3, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.arc(x + 9, y - 35, 3, 0, Math.PI * 2); g.fill();
 
-    // Cabeza
-    const hy = y - 47;
-    g.fillStyle = L.skin;
-    g.beginPath(); g.arc(x - 8.4, hy + 1, 2.1, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.arc(x + 8.4, hy + 1, 2.1, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.arc(x, hy, 8.6, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = outline; g.lineWidth = 1; g.stroke();
+    // Cuello y cabeza
+    const hy = y0 - 8.6;
+    g.fillStyle = skinD; g.fillRect(-2.4, y0 - 4.2, 4.8, 5);
+    g.fillStyle = skin; g.fillRect(-2.1, y0 - 4.4, 4.2, 4.2);
+    if (L.style === 'mono') { g.fillStyle = L.hair; g.beginPath(); g.arc(0, hy - 7.2, 2.6, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = skin;
+    g.beginPath(); g.ellipse(-5.1, hy + .6, 1.3, 1.9, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(5.1, hy + .6, 1.3, 1.9, 0, 0, Math.PI * 2); g.fill();
+    grd = g.createRadialGradient(-1.8, hy - 2.2, .5, 0, hy, 7);
+    grd.addColorStop(0, skinL); grd.addColorStop(1, skinD);
+    g.fillStyle = grd;
+    g.beginPath(); g.ellipse(0, hy, 5.2, 6.2, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = edge; g.lineWidth = .7; g.stroke();
 
-    // Pelo de arriba
-    g.fillStyle = L.hair;
-    if (L.style === 'short' || L.style === 'band' || L.style === 'pony') {
-      g.beginPath(); g.arc(x, hy - 0.5, 8.9, Math.PI * 1.02, Math.PI * 1.98); g.closePath(); g.fill();
-      g.beginPath(); g.ellipse(x - 2, hy - 6.2, 6.5, 3.2, -0.2, 0, Math.PI * 2); g.fill();
-    } else if (L.style === 'afro') {
-      g.beginPath(); g.arc(x, hy - 2.5, 9.4, Math.PI * 1.05, Math.PI * 1.95); g.closePath(); g.fill();
-    } else if (L.style === 'buzz') {
-      g.globalAlpha *= .7;
-      g.beginPath(); g.arc(x, hy - 0.5, 8.8, Math.PI * 1.08, Math.PI * 1.92); g.closePath(); g.fill();
+    // Barba
+    if (L.beard) {
+      g.fillStyle = L.hair; g.globalAlpha *= .85;
+      g.beginPath();
+      g.moveTo(-4.9, hy + .6);
+      g.quadraticCurveTo(-4.6, hy + 6.8, 0, hy + 6.6);
+      g.quadraticCurveTo(4.6, hy + 6.8, 4.9, hy + .6);
+      g.quadraticCurveTo(3.4, hy + 3.2, 0, hy + 3.1);
+      g.quadraticCurveTo(-3.4, hy + 3.2, -4.9, hy + .6);
+      g.fill();
       g.globalAlpha = c.alpha == null ? 1 : c.alpha;
-    } else if (L.style === 'bald') {
-      g.fillStyle = 'rgba(255,255,255,.28)';
-      g.beginPath(); g.ellipse(x - 3, hy - 4.5, 3, 1.6, -0.4, 0, Math.PI * 2); g.fill();
     }
-    if (L.style === 'band') {
-      g.fillStyle = L.colors[1];
-      g.fillRect(x - 8.6, hy - 4.6, 17.2, 2.6);
+
+    // Pelo
+    g.fillStyle = L.hair;
+    const cap = (alpha, top) => {
+      g.save(); g.globalAlpha *= alpha;
+      g.beginPath(); g.ellipse(0, hy - .4 - (top || 0), 5.6, 6.5 + (top || 0), 0, Math.PI * 1.02, Math.PI * 1.98); g.closePath(); g.fill();
+      g.restore();
+    };
+    if (L.style === 'corto' || L.style === 'mono') {
+      cap(1);
+      g.save(); g.globalAlpha *= .45; g.fillRect(-5.3, hy - 1.6, 1.4, 2.6); g.fillRect(3.9, hy - 1.6, 1.4, 2.6); g.restore();
+    } else if (L.style === 'rapado') {
+      cap(.55);
+    } else if (L.style === 'rulos') {
+      cap(1, 1.4);
+      for (let i = -2; i <= 2; i++) { g.beginPath(); g.arc(i * 2.3, hy - 6.6 + Math.abs(i) * .9, 2, 0, Math.PI * 2); g.fill(); }
+    } else if (L.style === 'trenzas') {
+      cap(1);
+      g.strokeStyle = shade(L.hair, 0.35); g.lineWidth = .5;
+      for (let i = -2; i <= 2; i++) { g.beginPath(); g.moveTo(i * 1.9, hy - 6.6); g.lineTo(i * 2.3, hy - 2); g.stroke(); }
+    } else if (L.style === 'pelado') {
+      g.fillStyle = 'rgba(255,255,255,.3)';
+      g.beginPath(); g.ellipse(-1.8, hy - 3.8, 2, 1.1, -0.4, 0, Math.PI * 2); g.fill();
     }
 
     // Cara
-    const blink = (Math.floor(t * 10) % 37) === 0;
-    g.fillStyle = '#1B1410';
-    if (blink) {
-      g.fillRect(x - 4.4, hy + .2, 2.4, .9); g.fillRect(x + 2, hy + .2, 2.4, .9);
-    } else {
-      g.beginPath(); g.arc(x - 3.2, hy + .6, 1.3, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.arc(x + 3.2, hy + .6, 1.3, 0, Math.PI * 2); g.fill();
+    const blink = (Math.floor(t * 10) % 41) === 0;
+    g.fillStyle = '#16100C';
+    if (blink) { g.fillRect(-2.8, hy + .1, 1.6, .5); g.fillRect(1.2, hy + .1, 1.6, .5); }
+    else {
+      g.beginPath(); g.arc(-1.95, hy + .3, .78, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(1.95, hy + .3, .78, 0, Math.PI * 2); g.fill();
     }
-    g.strokeStyle = '#1B1410'; g.lineWidth = 1.1; g.lineCap = 'round';
-    if (c.rival) {
-      g.beginPath(); g.moveTo(x - 5.2, hy - 2.6); g.lineTo(x - 1.6, hy - 1.4); g.stroke();
-      g.beginPath(); g.moveTo(x + 5.2, hy - 2.6); g.lineTo(x + 1.6, hy - 1.4); g.stroke();
-      g.beginPath(); g.moveTo(x - 1.8, hy + 4.4); g.lineTo(x + 1.8, hy + 4.4); g.stroke();
-    } else {
-      g.strokeStyle = '#6A2E1C';
-      g.beginPath(); g.arc(x, hy + 3, 2.6, 0.2 * Math.PI, 0.8 * Math.PI); g.stroke();
+    g.strokeStyle = L.style === 'pelado' ? shade(skin, -0.5) : L.hair; g.lineWidth = .85; g.lineCap = 'round';
+    const inner = c.rival ? -1.1 : -1.9;
+    g.beginPath(); g.moveTo(-3.3, hy - 1.8); g.lineTo(-0.9, hy + inner); g.stroke();
+    g.beginPath(); g.moveTo(3.3, hy - 1.8); g.lineTo(0.9, hy + inner); g.stroke();
+    g.strokeStyle = skinD; g.lineWidth = .7;
+    g.beginPath(); g.moveTo(.2, hy + .8); g.lineTo(.6, hy + 2.6); g.lineTo(-.3, hy + 2.8); g.stroke();
+    g.strokeStyle = shade(skin, -0.45); g.lineWidth = .75;
+    g.beginPath();
+    if (c.rival) { g.moveTo(-1.4, hy + 4.1); g.lineTo(1.4, hy + 4.1); }
+    else { g.moveTo(-1.5, hy + 3.8); g.quadraticCurveTo(0, hy + 4.7, 1.5, hy + 3.8); }
+    g.stroke();
+
+    // Estrella sobre tu jugador
+    if (L.star && c.showStar) {
+      starShape(g, 0, hy - 13, 4.6);
+      g.fillStyle = '#FFC53D'; g.fill();
+      g.strokeStyle = '#7A5200'; g.lineWidth = .8; g.stroke();
     }
     g.restore();
   }
@@ -934,7 +1182,7 @@
     if (!d || !d.kind) return;
     const hp = G.st.pos[G.st.holder];
     const a = { x: hp[0], y: hp[1] };
-    const range = G.level.range || E.DEFAULT_RANGE;
+    const range = E.rangeFor(G.level, G.st.holder);
     if (d.kind === 'shot') {
       const far = E.dist(a.x, a.y, HOOP.x, HOOP.y) > range;
       g.fillStyle = far ? 'rgba(240,86,91,.16)' : 'rgba(60,193,127,.18)';
@@ -952,7 +1200,7 @@
       const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
       g.save();
       g.strokeStyle = 'rgba(159,232,195,.45)'; g.lineWidth = 1.5; g.setLineDash([3, 5]);
-      g.beginPath(); g.arc(a.x, a.y, E.DRIBBLE_MAX, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.arc(a.x, a.y, E.dribbleMaxFor(G.level, G.st.holder), 0, Math.PI * 2); g.stroke();
       g.restore();
       arrowLine(g, a, tgt, '#9FE8C3', { dash: [7, 7] });
       g.fillStyle = 'rgba(159,232,195,.35)';
@@ -1022,7 +1270,7 @@
       }
       if (leg && leg.type === 'pass' && leg.target === i) pose = 'catch';
       if (G.drag && G.drag.kind === 'pass' && G.drag.to === i) ring = '#FFFFFF';
-      chars.push({ x, y, pose, jump, ring, look: G.myLooks[i], id: i });
+      chars.push({ x, y, pose, jump, ring, look: G.myLooks[i], id: i, showStar: i === 0 && !(i === holder && G.mode === 'plan') });
     });
     (lv.defenders || []).forEach((d, k) => {
       const p = defPos[k];
@@ -1037,12 +1285,12 @@
     if (!A || leg.type === 'dribble') {
       let bx = hp[0], by = hp[1];
       if (leg && leg.type === 'dribble') { bx = leg.from.x + (leg.to.x - leg.from.x) * f; by = leg.from.y + (leg.to.y - leg.from.y) * f; }
-      drawBall(g, bx + 14, by - 1, 2 + Math.abs(Math.sin(now / 140)) * 13, .9);
+      drawBall(g, bx + 14, by - 1, 2 + Math.abs(Math.sin(now / 140)) * 17, .9);
     } else if (leg.type === 'pass') {
-      drawBall(g, leg.from.x + (leg.to.x - leg.from.x) * f, leg.from.y + (leg.to.y - leg.from.y) * f, 24);
+      drawBall(g, leg.from.x + (leg.to.x - leg.from.x) * f, leg.from.y + (leg.to.y - leg.from.y) * f, 34);
     } else if (leg.type === 'shot') {
       if (leg.blocked) {
-        drawBall(g, leg.from.x + 16 * f, leg.from.y + 8 * f, 40 * (1 - f) + 4);
+        drawBall(g, leg.from.x + 16 * f, leg.from.y + 8 * f, 62 * (1 - f) + 4);
       } else if (A.done && A.res.scored) {
         const k = Math.min(1, (now - A.doneAt) / 300);
         drawBall(g, HOOP.x, HOOP.y + k * 12, 0, 1 - k * .15);
@@ -1050,14 +1298,14 @@
         const hgt = Math.sin(Math.PI * f) * Math.min(90, E.dist(leg.from.x, leg.from.y, leg.to.x, leg.to.y) * .45);
         const x = leg.from.x + (leg.to.x - leg.from.x) * f;
         const y = leg.from.y + (leg.to.y - leg.from.y) * f;
-        drawBall(g, x, y, 40 * (1 - f) + hgt, 1 + Math.sin(Math.PI * f) * .5);
+        drawBall(g, x, y, 72 * (1 - f) + hgt, 1 + Math.sin(Math.PI * f) * .5);
       }
     }
 
     // Nombre del jugador con la pelota
     if (G.mode === 'plan') {
       const L = G.myLooks[holder];
-      drawNameTag(g, hp[0], hp[1] - 66, `#${L.num} ${L.name}`);
+      drawNameTag(g, hp[0], hp[1] - 80, L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`);
     }
   }
 
@@ -1093,7 +1341,7 @@
     return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
   }
   // ¿El dedo está sobre el personaje (pies o cuerpo)?
-  const onChar = (p, q, r) => E.dist(p.x, p.y, q[0], q[1]) < (r || 24) || E.dist(p.x, p.y, q[0], q[1] - 26) < (r || 24) + 4;
+  const onChar = (p, q, r) => E.dist(p.x, p.y, q[0], q[1]) < (r || 24) || E.dist(p.x, p.y, q[0], q[1] - 34) < (r || 24) + 6;
 
   function classify(p) {
     const st = G.st;
@@ -1166,19 +1414,21 @@
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = '#D9A866';
     g.fillRect(0, 0, c.width, c.height);
-    const s = Math.max(r.width / 240, r.height / H);
-    const ty = Math.max(r.height - H * s, Math.min(0, r.height / 2 - 215 * s));
-    g.setTransform(k * s, 0, 0, k * s, k * (r.width - W * s) / 2, k * ty);
+    // Encuadre centrado en la jugada; la cancha siempre cubre todo el recuadro
+    const s = Math.max(r.width / W, r.height / H, Math.min(r.width / 270, r.height / 250));
+    const tx = Math.max(r.width - W * s, Math.min(0, r.width / 2 - 180 * s));
+    const ty = Math.max(r.height - H * s, Math.min(0, r.height / 2 - 225 * s));
+    g.setTransform(k * s, 0, 0, k * s, k * tx, k * ty);
     paintCourt(g, W, H);
     drawHoop(g, 0);
     const rival = { name: 'Centellas', colors: ['#F2C230', '#22223B'] };
-    const pts = [[95, 300], [255, 240], [175, 170]];
-    arrowLine(g, { x: 95, y: 300 }, { x: 245, y: 245 }, '#FFFFFF');
-    const chars = pts.map((p, i) => ({ x: p[0], y: p[1], pose: i === 0 ? 'dribble' : i === 2 ? 'catch' : 'idle', look: lookFor(heroTeam, i), ring: i === 0 ? '#FFC53D' : null }));
-    chars.push({ x: 178, y: 255, pose: 'guard', look: lookFor(rival, 0), rival: true });
-    chars.push({ x: 120, y: 205, pose: 'guard', look: lookFor(rival, 1), rival: true });
+    const pts = [[95, 320], [255, 262], [175, 200]];
+    arrowLine(g, { x: 95, y: 320 }, { x: 245, y: 266 }, '#FFFFFF');
+    const chars = pts.map((p, i) => ({ x: p[0], y: p[1], pose: i === 0 ? 'dribble' : i === 2 ? 'catch' : 'idle', look: i === 0 && S.me ? starLook(heroTeam.colors) : lookFor(heroTeam, i), ring: i === 0 ? '#FFC53D' : null }));
+    chars.push({ x: 178, y: 278, pose: 'guard', look: lookFor(rival, 0), rival: true });
+    chars.push({ x: 120, y: 232, pose: 'guard', look: lookFor(rival, 1), rival: true });
     chars.sort((a, b) => a.y - b.y).forEach((ch) => drawChar(g, ch, now));
-    drawBall(g, 109, 299, 2 + Math.abs(Math.sin(now / 140)) * 13, .9);
+    drawBall(g, 109, 319, 2 + Math.abs(Math.sin(now / 140)) * 17, .9);
   }
   (function heroLoop(now) {
     requestAnimationFrame(heroLoop);
@@ -1188,7 +1438,7 @@
   // ---------------------------------------------------------------- Botones
   $('btn-play').onclick = () => startLevel(Math.min(S.unlocked, LEVELS.length - 1));
   $('btn-levels').onclick = () => show('levels');
-  $('btn-team').onclick = teamModal;
+  $('btn-team').onclick = playerModal;
   $('btn-premium-top').onclick = premiumModal;
   $('btn-levels-back').onclick = () => show('home');
   $('btn-game-back').onclick = () => { closeModal(); show('levels'); };
@@ -1199,7 +1449,8 @@
   requestAnimationFrame(render);
   const boot = () => {
     show('home');
-    if (!S.country) chooseCountry(true, renderHome);
+    if (!S.country) chooseCountry(true, () => createPlayer(true, renderHome));
+    else if (!S.me) createPlayer(true, renderHome);
   };
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(boot, boot); else boot();
 })();

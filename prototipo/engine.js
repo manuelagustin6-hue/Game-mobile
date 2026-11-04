@@ -74,8 +74,9 @@
   }
 
   // ---------------------------------------------------------------- Estado de una partida
+  // El nivel puede indicar quién empieza con la pelota (holder); si no, el jugador 0.
   function initState(level) {
-    return { t: 0, holder: 0, moves: 0, pos: level.players.map((p) => [p[0], p[1]]) };
+    return { t: 0, holder: level.holder || 0, moves: 0, pos: level.players.map((p) => [p[0], p[1]]) };
   }
   function cloneState(st) {
     return { t: st.t, holder: st.holder, moves: st.moves, pos: st.pos.map((p) => [p[0], p[1]]) };
@@ -121,12 +122,13 @@
     }
     const skill = isStar(level, st.holder) ? (level.starShot || 0) : 0;
     const pressure = near < 70;
-    let half = 15 - 6 * far + 2.5 * skill;
+    let half = 11 - 5 * far + 2.5 * skill;
     if (pressure) half -= 3 * (1 - near / 70);
     return {
       ideal: 38 + 50 * far,
-      half: Math.max(5, half),
+      half: Math.max(4, half),
       speed: 70 + 40 * far - 8 * skill,
+      aimTol: Math.max(3, 9 - 4 * far + 2 * skill), // margen lateral (unidades) para que la línea pase por el aro
       distance: d,
       pressure,
     };
@@ -170,8 +172,21 @@
         const to = { x: a.x + (HOOP.x - a.x) * f, y: a.y + (HOOP.y - a.y) * f };
         return { ok: false, reason: 'lejos', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to };
       }
-      // Medidor de fuerza: si el movimiento trae power (0–100), tiene que caer en la ventana.
-      // Sin power (buscador de soluciones, ayuda) el tiro se considera perfecto.
+      // Puntería: si el movimiento trae aim (punto hacia donde se trazó la línea), la línea
+      // que sale del tirador tiene que pasar cerca del centro del aro.
+      // Sin aim ni power (buscador de soluciones, ayuda) el tiro se considera perfecto.
+      if (move.aim) {
+        const win = shotWindow(level, st);
+        const vx = move.aim.x - a.x, vy = move.aim.y - a.y;
+        const len = Math.hypot(vx, vy);
+        if (len > 20) {
+          const err = Math.abs(vx * (HOOP.y - a.y) - vy * (HOOP.x - a.x)) / len;
+          if (err > win.aimTol) {
+            const to = { x: a.x + (vx / len) * d, y: a.y + (vy / len) * d };
+            return { ok: false, reason: 'desviado', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to, aimError: err, window: win };
+          }
+        }
+      }
       if (move.power != null) {
         const win = shotWindow(level, st);
         if (move.power < win.ideal - win.half) {

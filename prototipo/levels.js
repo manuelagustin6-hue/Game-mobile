@@ -1,6 +1,7 @@
 // Niveles de "Jugada Maestra".
 // Cancha de 360 x 600, aro en (180, 70).
-// players: el primero tiene la pelota.
+// players: tus jugadores; `holder` indica cuál empieza con la pelota (0 si falta) y `star` cuál es
+// el jugador del usuario (0 si falta).
 // defenders: {x, y} fijos, o con path (puntos de su ruta, ida y vuelta) y speed (px/s).
 // walls: obstáculos [x1, y1, x2, y2].
 // stage: 'club' (partido con tu club) o 'seleccion' (partido con tu selección).
@@ -23,8 +24,9 @@
     },
     {
       name: 'Línea de pase', stage: 'club',
-      tip: 'Si un defensor está en la línea del pase, te roba la pelota.',
-      players: [[60, 480], [300, 240], [110, 250]],
+      tip: 'La pelota la tiene el base. Tu jugador espera libre: si un defensor está en la línea del pase, roba.',
+      players: [[110, 250], [60, 480], [300, 240]],
+      holder: 1,
       defenders: [{ x: 180, y: 360 }],
     },
     {
@@ -41,8 +43,9 @@
     },
     {
       name: 'Convocatoria', stage: 'seleccion',
-      tip: 'Este defensor se mueve. Mira su recorrido antes de pasar.',
-      players: [[180, 520], [100, 260], [270, 260]],
+      tip: 'Este defensor se mueve. Mira su recorrido antes de pasar; tu jugador espera a la izquierda.',
+      players: [[100, 260], [180, 520], [270, 260]],
+      holder: 1,
       defenders: [{ x: 320, y: 390, path: [[40, 390]], speed: 150 }],
     },
 
@@ -65,8 +68,9 @@
     },
     {
       name: 'Presión', stage: 'club',
-      tip: 'Dos defensores cubren el centro. Ábrete por las bandas.',
-      players: [[180, 560], [50, 450], [310, 450], [60, 230], [300, 230]],
+      tip: 'Dos defensores cubren el centro. Ábrete por las bandas y busca a tu jugador en la esquina.',
+      players: [[60, 230], [180, 560], [50, 450], [310, 450], [300, 230]],
+      holder: 1,
       defenders: [
         { x: 180, y: 380, path: [[180, 300]], speed: 90 },
         { x: 120, y: 250, path: [[240, 250]], speed: 160 },
@@ -86,8 +90,9 @@
     },
     {
       name: 'Contraataque', stage: 'club',
-      tip: 'Los defensores vuelven rápido. Juega antes de que lleguen.',
-      players: [[180, 580], [70, 400], [290, 400], [180, 250]],
+      tip: 'Los defensores vuelven rápido. Juega antes de que lleguen y define con tu jugador.',
+      players: [[180, 250], [180, 580], [70, 400], [290, 400]],
+      holder: 1,
       defenders: [
         { x: 180, y: 120, path: [[180, 230]], speed: 120 },
         { x: 40, y: 330, path: [[320, 330]], speed: 200 },
@@ -95,8 +100,9 @@
     },
     {
       name: 'Final con la selección', stage: 'seleccion',
-      tip: 'La final. Defensores en movimiento, obstáculos y poco espacio.',
-      players: [[60, 570], [300, 560], [300, 380], [60, 380], [180, 240]],
+      tip: 'La final. Defensores en movimiento, obstáculos y poco espacio. El último tiro es tuyo.',
+      players: [[180, 240], [60, 570], [300, 560], [300, 380], [60, 380]],
+      holder: 1,
       defenders: [
         { x: 180, y: 560, path: [[180, 470]], speed: 110 },
         { x: 40, y: 470, path: [[320, 470]], speed: 180 },

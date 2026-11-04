@@ -8,11 +8,12 @@ const LEVELS = require(path.join(__dirname, '..', 'prototipo', 'levels.js'));
 let errors = 0;
 LEVELS.forEach((lv, i) => {
   const s = Engine.solve(lv);
-  const direct = Engine.simulate(lv, [0, 'H']);
+  const h = lv.holder || 0;
+  const direct = Engine.simulate(lv, [h, 'H']);
   const best = s.best ? s.best.chain.join('→') : 'SIN SOLUCIÓN';
   console.log(
     `${String(i + 1).padStart(2)} ${lv.name.padEnd(24)} jugadas que funcionan ${String(s.wins).padStart(3)} de ${String(s.total).padEnd(4)} ` +
-    `mín. movimientos ${s.minMoves ?? '-'}  mejor ${best.padEnd(12)} tiro directo: ${direct.ok ? 'entra' : direct.reason}`
+    `mín. movimientos ${s.minMoves ?? '-'}  mejor ${best.padEnd(12)} tiro directo: ${(direct.ok ? 'entra' : direct.reason).padEnd(6)} ${lv.holder ? 'empieza #' + lv.holder : 'empiezas tú'}`
   );
   if (!s.best) errors++;
 });

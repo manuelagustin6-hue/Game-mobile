@@ -496,10 +496,10 @@
       S.called[i] = true; save();
       return callUp(i, () => startLevel(i));
     }
-    G.idx = i; G.level = Object.assign({}, lv, { starIdx: 0 }, starStats()); G.solution = E.solve(lv);
+    G.idx = i; G.level = Object.assign({}, lv, { starIdx: lv.star || 0 }, starStats()); G.solution = E.solve(lv);
     G.mine = myTeam(i); G.rival = rivalTeam(i);
     G.myLooks = lv.players.map((_, k) => {
-      if (k === 0) return starLook(G.mine.colors);
+      if (k === G.level.starIdx) return starLook(G.mine.colors);
       const lk = lookFor(G.mine, k);
       if (lk.num === S.me.num) lk.num = (lk.num + 20) % 100;
       return lk;
@@ -542,7 +542,9 @@
         <div class="side right"><span>${G.rival.name}</span>${crest(G.rival.colors, true)}</div>
       </div>
       <p>${lv.tip}</p>
-      <p class="note">Empiezas tú con la pelota: <b style="color:var(--gold)">★ ${esc(S.me.name)}</b>.</p>
+      <p class="note">${(lv.holder || 0) === (lv.star || 0)
+        ? `Empiezas tú con la pelota: <b style="color:var(--gold)">★ ${esc(S.me.name)}</b>.`
+        : `La pelota la tiene <b>#${G.myLooks[lv.holder || 0].num} ${esc(G.myLooks[lv.holder || 0].name)}</b>. Tu jugador <b style="color:var(--gold)">★ ${esc(S.me.name)}</b> espera libre: búscalo para definir.`}</p>
       <div class="facts">
         <div class="fact"><b>${min === 0 ? 'Tiro directo' : min + ' ' + movesWord(min)}</b><span>para 3 estrellas</span></div>
         <div class="fact"><b>${(lv.defenders || []).length}</b><span>defensores</span></div>
@@ -550,7 +552,7 @@
       <ul class="howto">
         <li><b>Pase:</b> arrastra del jugador con la pelota a un compañero.</li>
         <li><b>Conducir:</b> arrastra a un espacio libre para avanzar unos pasos.</li>
-        <li><b>Tiro:</b> arrastra hasta el aro; después mantén presionado para cargar fuerza y suelta en la zona verde.</li>
+        <li><b>Tiro:</b> traza la línea hacia el centro del aro; después mantén presionado para cargar fuerza y suelta en la zona verde.</li>
       </ul>
       <p class="note">Juegas un movimiento por vez. Los rivales solo se mueven mientras se ejecuta tu movimiento.</p>
       <div class="actions"><button class="btn" id="m-go">A jugar</button></div>`,
@@ -710,6 +712,7 @@
         obstaculo: ['Pase bloqueado', 'La pelota chocó contra un obstáculo.'],
         tapon: ['Tapón', 'Tenías un defensor encima. Tira desde donde estés libre.'],
         lejos: ['Muy lejos', 'Tiraste desde fuera de la línea de triple: la pelota no llega.'],
+        desviado: ['Tiro desviado', 'La línea no pasó por el centro del aro y la pelota pegó en el costado. Apunta con más precisión.'],
         corto: ['Tiro corto', 'Te faltó fuerza. Suelta más arriba en la barra, dentro de la zona verde.'],
         largo: ['Tiro largo', 'Te pasaste de fuerza y la pelota pegó en el tablero. Suelta antes, dentro de la zona verde.'],
       };
@@ -1191,7 +1194,7 @@
       const far = E.dist(a.x, a.y, HOOP.x, HOOP.y) > range;
       g.fillStyle = far ? 'rgba(240,86,91,.16)' : 'rgba(60,193,127,.18)';
       g.beginPath(); g.arc(HOOP.x, HOOP.y, range, 0, Math.PI * 2); g.fill();
-      arrowLine(g, a, HOOP, far ? '#F0565B' : '#FFC53D', { arc: true, dash: [2, 11] });
+      arrowLine(g, a, { x: d.x, y: d.y }, far ? '#F0565B' : '#FFC53D', { arc: true, dash: [2, 11] });
     } else if (d.kind === 'pass') {
       const bp = G.st.pos[d.to];
       const b = { x: bp[0], y: bp[1] };
@@ -1261,6 +1264,10 @@
     drawHoop(g, swish);
     if (G.hint) drawHint(g, now);
     if (G.mode === 'plan') drawDragPreview(g);
+    if (G.mode === 'charge' && G.charge) {
+      const hp0 = G.st.pos[G.st.holder];
+      arrowLine(g, { x: hp0[0], y: hp0[1] }, G.charge.aim, '#FFC53D', { arc: true, dash: [2, 11] });
+    }
 
     // Personajes, ordenados por profundidad
     const chars = [];
@@ -1275,7 +1282,7 @@
       }
       if (leg && leg.type === 'pass' && leg.target === i) pose = 'catch';
       if (G.drag && G.drag.kind === 'pass' && G.drag.to === i) ring = '#FFFFFF';
-      chars.push({ x, y, pose, jump, ring, look: G.myLooks[i], id: i, showStar: i === 0 && !(i === holder && G.mode === 'plan') });
+      chars.push({ x, y, pose, jump, ring, look: G.myLooks[i], id: i, showStar: i === G.level.starIdx && !(i === holder && (G.mode === 'plan' || G.mode === 'charge')) });
     });
     (lv.defenders || []).forEach((d, k) => {
       const p = defPos[k];
@@ -1319,7 +1326,7 @@
     A.doneAt = performance.now();
     const r = A.res;
     if (!r.ok) {
-      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!' }[r.reason] || '¡Fallo!', 'bad');
+      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!', desviado: '¡Desviada!' }[r.reason] || '¡Fallo!', 'bad');
       try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* nada */ }
       G.mode = 'over';
       setTimeout(() => { clearFloat(); finishLevel(false, r.reason); }, 1100);
@@ -1353,7 +1360,7 @@
     for (let j = 0; j < st.pos.length; j++) {
       if (j !== st.holder && onChar(p, st.pos[j], 24)) return { kind: 'pass', to: j };
     }
-    if (E.dist(p.x, p.y, HOOP.x, HOOP.y) < 42) return { kind: 'shot' };
+    if (E.dist(p.x, p.y, HOOP.x, HOOP.y) < 70) return { kind: 'shot', x: p.x, y: p.y };
     const hp = st.pos[st.holder];
     if (E.dist(p.x, p.y, hp[0], hp[1]) < E.DRIBBLE_MIN + 6) return { kind: null };
     return { kind: 'dribble', x: p.x, y: p.y };
@@ -1388,7 +1395,7 @@
     else if (d.kind === 'shot') {
       move = { type: 'shot' };
       // Si el tiro es posible (sin tapón y en distancia), primero hay que cargar la fuerza
-      if (E.step(G.level, G.st, move).ok) return startCharge();
+      if (E.step(G.level, G.st, move).ok) return startCharge({ x: d.x, y: d.y });
     } else {
       const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
       if (tgt.len < E.DRIBBLE_MIN) { $('tipbar').textContent = 'No hay espacio para conducir hacia ahí.'; return; }
@@ -1403,9 +1410,9 @@
 
   // ---------------------------------------------------------------- Medidor de fuerza del tiro
   const stage = $('stage');
-  function startCharge() {
+  function startCharge(aim) {
     const w = E.shotWindow(G.level, G.st);
-    G.charge = { w, value: 0, dir: 1, pressing: false, last: 0 };
+    G.charge = { w, aim, value: 0, dir: 1, pressing: false, last: 0 };
     G.mode = 'charge';
     $('meter-zone').style.top = (100 - (w.ideal + w.half)) + '%';
     $('meter-zone').style.height = (2 * w.half) + '%';
@@ -1416,7 +1423,7 @@
     $('meter').style.right = Math.max(6, rs.right - rc.right + 6) + 'px';
     $('meter-track').style.height = Math.round(rc.height * 0.5) + 'px';
     $('meter').hidden = false;
-    $('tipbar').textContent = 'Mantén presionado para cargar fuerza y suelta dentro de la zona verde.';
+    $('tipbar').textContent = 'Dirección fijada. Mantén presionado para cargar fuerza y suelta dentro de la zona verde.';
   }
   // La barra sube y baja mientras se mantiene presionado.
   function updateCharge(now) {
@@ -1435,7 +1442,7 @@
     const power = c.value;
     G.charge = null;
     $('meter').hidden = true;
-    G.anim = { res: E.step(G.level, G.st, { type: 'shot', power }), real0: performance.now(), done: false };
+    G.anim = { res: E.step(G.level, G.st, { type: 'shot', power, aim: c.aim }), real0: performance.now(), done: false };
     G.mode = 'anim';
     $('tipbar').textContent = '';
   }

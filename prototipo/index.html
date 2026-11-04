@@ -103,8 +103,9 @@
   .brand h1 { font-size: clamp(44px, 12vw, 60px); line-height: .86; font-weight: 800; text-transform: uppercase; letter-spacing: -0.01em; }
   .brand h1 span { color: var(--ball); }
   #scr-home { justify-content: center; }
-  .hero-court { flex: 1; min-height: 170px; max-height: 52vh; border-radius: 20px; overflow: hidden; position: relative; border: 1px solid var(--line); }
-  .hero-court canvas { width: 100%; height: 100%; display: block; }
+  .hero-court { flex: 1; min-height: 170px; max-height: 52vh; border-radius: 20px; overflow: hidden; position: relative; border: 1px solid var(--line); background: #06080f; }
+  /* Un solo canvas 3D para todo el juego: llena el contenedor donde esté (portada o partida) */
+  #court { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; border-radius: inherit; }
   .team-card {
     display: flex; align-items: center; gap: 12px;
     background: var(--ink-2); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px;
@@ -147,8 +148,17 @@
   .game-top { display: flex; align-items: center; gap: 8px; }
   .lvl-label { font-family: var(--display); font-weight: 700; font-size: 17px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.05; min-width: 0; }
   .lvl-label small { display: block; font-family: var(--body); font-weight: 500; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stage { flex: 1; min-height: 0; display: grid; place-items: center; position: relative; }
-  #court { display: block; touch-action: none; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+  .stage {
+    flex: 1; min-height: 0; position: relative; touch-action: none;
+    border-radius: 16px; overflow: hidden; background: #06080f;
+    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  }
+  .nametag {
+    position: absolute; transform: translate(-50%, -100%);
+    background: rgba(14,26,49,.88); color: var(--paper); border: 1px solid rgba(255,255,255,.12);
+    font-weight: 700; font-size: 12px; line-height: 1; padding: 5px 9px; border-radius: 999px;
+    white-space: nowrap; pointer-events: none;
+  }
   .tipbar { font-size: 13px; color: var(--muted); text-align: center; min-height: 2.6em; display: flex; align-items: center; justify-content: center; padding-inline: 8px; }
   .movebar {
     display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
@@ -160,7 +170,6 @@
   .howto { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.35; }
   .howto b { color: var(--gold); font-weight: 600; }
   .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .stage { touch-action: none; }
   .meter {
     position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
     width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -323,7 +332,7 @@
       <span class="kicker">Básquet de estrategia</span>
       <h1>Jugada<br><span>Maestra</span></h1>
     </div>
-    <div class="hero-court"><canvas id="hero"></canvas></div>
+    <div class="hero-court" id="hero-court"></div>
     <div class="team-card" id="home-team"></div>
     <div class="home-actions">
       <button class="btn" id="btn-play">Jugar</button>
@@ -354,6 +363,7 @@
     </div>
     <div class="stage" id="stage">
       <canvas id="court"></canvas>
+      <div class="nametag" id="nametag" hidden></div>
       <div class="meter" id="meter" hidden aria-live="polite">
         <div class="meter-label">Fuerza</div>
         <div class="meter-dist" id="meter-dist"></div>
@@ -372,6 +382,9 @@
 <div id="modal" hidden><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
 <div id="ad" hidden></div>
 
+<script src="vendor/three.min.js"></script>
 <script src="engine.js"></script>
 <script src="levels.js"></script>
+<script src="scene3d.js"></script>
+<script src="players3d.js"></script>
 <script src="game.js"></script>

@@ -1,4 +1,4 @@
-// "Jugada Maestra": interfaz, dibujo y progreso del jugador.
+// "Jugada Maestra": interfaz, escena 3D (Scene3D + Players3D) y progreso del jugador.
 (function () {
   'use strict';
   const E = window.Engine;
@@ -154,9 +154,9 @@
   function show(name) {
     current = name;
     ['home', 'levels', 'game'].forEach((n) => { $('scr-' + n).hidden = n !== name; });
-    if (name === 'home') renderHome();
+    if (name === 'home') { enterHome(); renderHome(); }
     if (name === 'levels') renderLevels();
-    if (name === 'game') requestAnimationFrame(resize);
+    if (name === 'game') enterGame();
     refreshHud();
   }
 
@@ -231,14 +231,14 @@
 
   // ---------------------------------------------------------------- Inicio
   function renderHome() {
-    drawHero();
+    buildHero();
     if (!S.country || !S.me) { $('home-team').innerHTML = ''; return; }
     const i = Math.min(S.unlocked, LEVELS.length - 1);
     const t = myTeam(LEVELS[i].stage === 'seleccion' ? Math.max(0, i - 1) : i);
     $('home-team').innerHTML = `<canvas class="mini" id="home-me"></canvas>
       <div class="meta"><div class="label">Tu jugador · Media ${rating()}</div><div class="name">${esc(S.me.name)} <span style="color:var(--muted)">#${S.me.num}</span></div>
       <div class="label" style="text-transform:none;letter-spacing:0">${t.flag} ${t.name} · ${t.sub}</div></div>`;
-    drawPortrait($('home-me'), starLook(t.colors), 'idle');
+    P3.renderPortrait($('home-me'), starLook(t.colors), 'idle');
     $('btn-play').textContent = S.unlocked >= LEVELS.length ? 'Jugar de nuevo' : `Jugar nivel ${i + 1}`;
   }
 
@@ -296,10 +296,8 @@
   }
 
   // ---------------------------------------------------------------- Personajes
-  const SKINS = ['#F2D0B5', '#E1B48F', '#C99068', '#A86F48', '#7D4F31', '#5A3520'];
-  const HAIRS = ['#14100D', '#2B1C13', '#4E3220', '#7A4E2B', '#B48450', '#D8C08A'];
-  const STYLES = ['corto', 'rapado', 'rulos', 'trenzas', 'mono', 'pelado'];
-  const STYLE_NAMES = { corto: 'Corto', rapado: 'Rapado', rulos: 'Rulos', trenzas: 'Trenzas', mono: 'Moño', pelado: 'Pelado' };
+  // Las listas de aspecto (pieles, pelos, peinados, cuerpos, accesorios) las define el módulo 3D.
+  const { SKINS, HAIRS, STYLES, STYLE_NAMES, BODIES, BODY_NAMES, ACCESSORIES, ACCESSORY_NAMES } = window.Players3D;
   const NUMS = [4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 21];
   const SURNAMES = ['Ramos', 'Silva', 'Costa', 'Díaz', 'Medina', 'Rojas', 'Vega', 'Ortiz', 'Castro', 'Luna', 'Torres', 'Navarro', 'Molina', 'Suárez', 'Herrera', 'Paz'];
   function hash(str) {
@@ -318,6 +316,8 @@
       style: STYLES[(h >>> 8) % STYLES.length],
       beard: (h >>> 12) % 4 === 0,
       h: 0.95 + ((h >>> 14) % 10) / 100,
+      body: BODIES[(h >>> 16) % BODIES.length],
+      accessory: (h >>> 18) % 10 < 6 ? 'ninguno' : ACCESSORIES[1 + (h >>> 22) % (ACCESSORIES.length - 1)],
       num: NUMS[((base >>> 3) + i * 5) % NUMS.length],
       name: SURNAMES[((base >>> 7) + i * 7) % SURNAMES.length],
       phase: (h % 100) / 37,
@@ -346,30 +346,17 @@
     const k = skills();
     return Math.min(99, 62 + 3 * (k.tiro + k.pase + k.manejo) + Math.floor(totalStars() / 4));
   }
-  function defaultMe() { return { name: '', num: 10, skin: 2, hair: 0, hairColor: 0, beard: false }; }
+  // Aspecto de tu jugador: índices en las listas (los campos nuevos toman el valor por defecto en
+  // partidas guardadas antes de que existieran).
+  function defaultMe() { return { name: '', num: 10, skin: 2, hair: 0, hairColor: 0, beard: false, body: 1, accessory: 0 }; }
   function starLook(colors, m) {
-    m = m || S.me || defaultMe();
+    m = Object.assign(defaultMe(), m || S.me || {});
     return {
       colors,
       skin: SKINS[m.skin], hair: HAIRS[m.hairColor], style: STYLES[m.hair], beard: !!m.beard,
+      body: BODIES[m.body] || BODIES[1], accessory: ACCESSORIES[m.accessory] || ACCESSORIES[0],
       h: 1.03, num: m.num, name: m.name || 'Tú', phase: 0, star: true,
     };
-  }
-
-  // Retrato de un personaje en un <canvas> de la interfaz.
-  function drawPortrait(canvas, look, pose) {
-    const r = canvas.getBoundingClientRect();
-    const w = r.width || canvas.width, h = r.height || canvas.height;
-    const k = Math.min(3, window.devicePixelRatio || 1);
-    canvas.width = Math.round(w * k); canvas.height = Math.round(h * k);
-    const g = canvas.getContext('2d');
-    const grd = g.createLinearGradient(0, 0, 0, canvas.height);
-    grd.addColorStop(0, '#22385F'); grd.addColorStop(1, '#101D36');
-    g.fillStyle = grd; g.fillRect(0, 0, canvas.width, canvas.height);
-    const s = (h * 0.86) / 84;
-    g.setTransform(k * s, 0, 0, k * s, k * w / 2, k * h * 0.95);
-    drawChar(g, { x: 0, y: 0, pose: pose || 'dribble', look }, 0);
-    if ((pose || 'dribble') === 'dribble') drawBall(g, 14, -1, 9, .9);
   }
 
   const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
@@ -404,6 +391,10 @@
         ${HAIRS.map((s, i) => `<button class="sw${i === d.hairColor ? ' sel' : ''}" data-v="${i}" style="background:${s}" aria-label="Color de pelo ${i + 1}"></button>`).join('')}</div></div>
       <div class="field"><span>Barba</span><div class="chips" data-k="beard">
         <button class="chip${!d.beard ? ' sel' : ''}" data-v="0">No</button><button class="chip${d.beard ? ' sel' : ''}" data-v="1">Sí</button></div></div>
+      <div class="field"><span>Cuerpo</span><div class="chips" data-k="body">
+        ${BODIES.map((b, i) => `<button class="chip${i === d.body ? ' sel' : ''}" data-v="${i}">${BODY_NAMES[b]}</button>`).join('')}</div></div>
+      <div class="field"><span>Accesorio</span><div class="chips" data-k="accessory">
+        ${ACCESSORIES.map((a, i) => `<button class="chip${i === d.accessory ? ' sel' : ''}" data-v="${i}">${ACCESSORY_NAMES[a]}</button>`).join('')}</div></div>
       <p class="note bad-note" id="cr-err" hidden>Escribe un nombre para tu jugador.</p>
       <div class="actions"><button class="btn" id="cr-ok">${firstTime ? 'Empezar mi carrera' : 'Guardar'}</button>
         ${firstTime ? '' : '<button class="btn alt" id="cr-cancel">Cancelar</button>'}</div>`,
@@ -418,7 +409,7 @@
       'cr-minus': () => { d.num = (d.num + 99) % 100; $('cr-num').textContent = d.num; paint(); },
       'cr-plus': () => { d.num = (d.num + 1) % 100; $('cr-num').textContent = d.num; paint(); },
     });
-    const paint = () => drawPortrait($('cr-prev'), starLook(colors, d), 'dribble');
+    const paint = () => P3.renderPortrait($('cr-prev'), starLook(colors, d), 'dribble');
     $('sheet').querySelectorAll('[data-k]').forEach((box) => {
       const key = box.dataset.k;
       box.querySelectorAll('button').forEach((b) => {
@@ -476,13 +467,13 @@
       S.skills = Object.assign(skills(), { [sk.id]: lvl + 1 });
       save(); refreshHud(); renderHome(); playerModal();
     }]))));
-    drawPortrait($('me-portrait'), starLook(currentColors()), 'dribble');
+    P3.renderPortrait($('me-portrait'), starLook(currentColors()), 'dribble');
   }
 
   // ---------------------------------------------------------------- Partida
   const G = {
     idx: 0, level: null, solution: null, mode: 'plan',
-    st: null, anim: null, drag: null, hint: false, hintCache: null,
+    st: null, anim: null, drag: null, charge: null, hint: false, hintCache: null,
     mine: null, rival: null, myLooks: [], rivalLooks: [],
   };
 
@@ -506,6 +497,7 @@
     });
     G.rivalLooks = (lv.defenders || []).map((_, k) => lookFor(G.rival, k));
     G.hint = false;
+    buildCast();
     resetPlay();
     show('game');
     $('game-label').innerHTML = `Nivel ${i + 1} · ${lv.name}<small>${G.mine.name} vs ${G.rival.name}</small>`;
@@ -514,10 +506,11 @@
 
   function resetPlay() {
     G.st = E.initState(G.level);
-    G.anim = null; G.drag = null; G.hintCache = null; G.charge = null;
-    $('meter').hidden = true;
+    G.anim = null; G.drag = null; G.hintCache = null;
+    stopCharge();
     G.mode = 'plan';
     clearFloat();
+    planCamera(true);
     $('tipbar').textContent = G.level.tip;
     updateMoveBar();
     updateHintBtn();
@@ -756,488 +749,230 @@
   }
   function clearFloat() { const f = $('float'); if (f) f.remove(); }
 
-  // ---------------------------------------------------------------- Dibujo
+  // ---------------------------------------------------------------- Escena 3D
+  // Un solo renderer para todo el juego: el canvas vive dentro de #stage durante la partida y se
+  // muda a la portada (#hero-court) en el inicio. La escena, el estadio y la pelota se crean una vez.
   const cv = $('court');
-  const ctx = cv.getContext('2d');
-  let scale = 1, dpr = 1, floor = null;
-  const W = E.COURT.w, H = E.COURT.h, HOOP = E.HOOP;
+  const stage = $('stage');
+  const P3 = window.Players3D;
+  const HOOP = E.HOOP, HOOP_H = Scene3D.HOOP_H;
+  const scene = Scene3D.create({ canvas: cv });
+  // ?calidad=media|baja permite probar en equipos lentos o sin GPU
+  const qualityParam = new URLSearchParams(location.search).get('calidad');
+  if (qualityParam) scene.setQuality(qualityParam);
 
   function resize() {
-    const box = $('stage').getBoundingClientRect();
-    if (!box.width || !box.height) return;
-    scale = Math.min(box.width / W, box.height / H);
-    dpr = Math.min(3, window.devicePixelRatio || 1);
-    cv.style.width = W * scale + 'px';
-    cv.style.height = H * scale + 'px';
-    cv.width = Math.round(W * scale * dpr);
-    cv.height = Math.round(H * scale * dpr);
-    floor = makeFloor(scale * dpr);
+    const host = cv.parentElement;
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    scene.resize(r.width, r.height, window.devicePixelRatio || 1);
+    // El encuadre depende del tamaño del área: se recalcula si se está planeando
+    if (current === 'game' && G.st && (G.mode === 'plan' || G.mode === 'charge')) planCamera(true);
   }
-  window.addEventListener('resize', () => { if (current === 'game') resize(); if (current === 'home') drawHero(); });
+  const observer = new ResizeObserver(resize);
+  observer.observe(stage);
+  observer.observe($('hero-court'));
+  window.addEventListener('resize', resize);
 
-  function makeFloor(k) {
-    const c = document.createElement('canvas');
-    c.width = Math.round(W * k); c.height = Math.round(H * k);
-    const g = c.getContext('2d');
-    g.setTransform(k, 0, 0, k, 0, 0);
-    paintCourt(g, W, H);
-    return c;
+  // Mueve el canvas al contenedor de la pantalla activa (va primero para quedar debajo de la interfaz).
+  function mountCanvas(host) {
+    if (cv.parentElement !== host) host.prepend(cv);
+    resize();
   }
 
-  // Parqué y líneas. La línea de triple coincide con el alcance de tiro.
-  function paintCourt(g, w, h) {
-    g.fillStyle = '#D9A866';
-    g.fillRect(0, 0, w, h);
-    let seed = 7;
-    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    const plank = 18;
-    for (let x = 0; x < w; x += plank) {
-      let y = -rnd() * 120;
-      while (y < h) {
-        const len = 90 + rnd() * 140;
-        const tone = rnd();
-        g.fillStyle = `rgba(${tone > .5 ? '255,236,200' : '120,72,28'},${0.05 + rnd() * 0.08})`;
-        g.fillRect(x, y, plank, len);
-        g.fillStyle = 'rgba(90,52,18,.16)';
-        g.fillRect(x, y, plank, 1);
-        y += len;
-      }
-      g.fillStyle = 'rgba(90,52,18,.14)';
-      g.fillRect(x, 0, 1, h);
-    }
-    g.fillStyle = 'rgba(178, 62, 28, .78)';
-    g.fillRect(HOOP.x - 50, 30, 100, 170);
-    g.strokeStyle = 'rgba(255,255,255,.92)';
-    g.lineWidth = 3;
-    g.strokeRect(6, 6, w - 12, h - 12);
-    g.strokeRect(HOOP.x - 50, 6, 100, 194);
-    g.beginPath(); g.arc(HOOP.x, 200, 50, 0, Math.PI); g.stroke();
-    g.setLineDash([8, 8]);
-    g.beginPath(); g.arc(HOOP.x, 200, 50, Math.PI, 2 * Math.PI); g.stroke();
-    g.setLineDash([]);
-    const R = E.DEFAULT_RANGE;
-    const side = 24;
-    const a = Math.asin((side - HOOP.x) / R);
-    const yJoin = HOOP.y + Math.cos(a) * R;
-    g.beginPath();
-    g.moveTo(side, 6); g.lineTo(side, yJoin);
-    g.arc(HOOP.x, HOOP.y, R, Math.PI / 2 - a, Math.PI / 2 + a, true);
-    g.lineTo(w - side, 6);
-    g.stroke();
-    g.beginPath(); g.moveTo(6, h - 6); g.lineTo(w - 6, h - 6); g.stroke();
-    g.beginPath(); g.arc(HOOP.x, h - 6, 50, Math.PI, 2 * Math.PI); g.stroke();
+  // Jugadores 3D vivos: los de la portada y los de la partida (propios y rivales).
+  const cast = { hero: [], mine: [], rivals: [] };
+  function disposeAll(list) { list.forEach((p) => p.dispose()); list.length = 0; }
+
+  // Gira al jugador hacia un punto de la cancha con suavidad (sin saltos al cambiar de objetivo).
+  function turnTo(p, x, y, dt) {
+    const dx = (x - 180) - p.object.position.x, dz = (y - 300) - p.object.position.z;
+    if (dx * dx + dz * dz < 1e-4) return;
+    const goal = Math.atan2(dx, dz);
+    let d = goal - p.facing;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    p.setFacing(p.facing + d * (1 - Math.exp(-dt * 10)));
   }
 
-  function drawHoop(g, swish) {
-    g.fillStyle = 'rgba(255,255,255,.95)';
-    g.fillRect(HOOP.x - 36, 44, 72, 7);
-    g.fillStyle = '#1D2A44';
-    g.fillRect(HOOP.x - 36, 44, 72, 2);
-    g.strokeStyle = 'rgba(255,255,255,.85)';
-    g.lineWidth = 1.2;
-    const sw = swish ? Math.sin(swish * Math.PI) * 4 : 0;
-    for (let k = -3; k <= 3; k++) {
-      g.beginPath();
-      g.moveTo(HOOP.x + k * 4.3, HOOP.y);
-      g.lineTo(HOOP.x + k * 2.6, HOOP.y + 16 + sw);
-      g.stroke();
-    }
-    g.strokeStyle = '#F26B1D';
-    g.lineWidth = 3.5;
-    g.beginPath(); g.arc(HOOP.x, HOOP.y, 14, 0, Math.PI * 2); g.stroke();
+  // Centro de la pelota en la mano derecha de un jugador (coordenadas de cancha + altura).
+  function handBall(p) {
+    const h = p.handWorld('derecha');
+    const c = scene.worldToCourt(h);
+    return { x: c.x, y: c.y, h: Math.max(3.2, h.y - 3.2) };
   }
+  const placeBall = (b) => scene.ball.set(b.x, b.y, b.h - 3.2, true);
 
-  // Pelota. lift = altura sobre el piso (la sombra queda en el piso).
-  function drawBall(g, x, y, lift, s) {
-    s = s || 1;
-    const r = E.BALL_R * s;
-    g.fillStyle = 'rgba(0,0,0,.25)';
-    g.beginPath(); g.ellipse(x + 1, y + 1, r * (1 - Math.min(.4, lift / 120)), r * .5, 0, 0, Math.PI * 2); g.fill();
-    const by = y - lift;
-    const grd = g.createRadialGradient(x - r * .35, by - r * .35, r * .2, x, by, r);
-    grd.addColorStop(0, '#FF9A52'); grd.addColorStop(1, '#D8560F');
-    g.fillStyle = grd;
-    g.beginPath(); g.arc(x, by, r, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = 'rgba(40,16,4,.75)'; g.lineWidth = 1;
-    g.beginPath(); g.moveTo(x - r, by); g.lineTo(x + r, by); g.stroke();
-    g.beginPath(); g.moveTo(x, by - r); g.lineTo(x, by + r); g.stroke();
-    g.beginPath(); g.arc(x - r * 1.25, by, r * .9, -0.9, 0.9); g.stroke();
-    g.beginPath(); g.arc(x + r * 1.25, by, r * .9, Math.PI - 0.9, Math.PI + 0.9); g.stroke();
+  // ---------------------------------------------------------------- Portada
+  const HERO_RIVAL = { name: 'Centellas', colors: ['#F2C230', '#22223B'] };
+  const HERO_SPOTS = [[95, 320, 'dribble'], [255, 262, 'idle'], [175, 200, 'catch']];
+  const HERO_RIVAL_SPOTS = [[178, 278], [120, 232]];
+  let heroKey = '';
+  function heroTeam() {
+    return S.club1 ? myTeam(Math.min(S.unlocked, LEVELS.length - 1)) : { name: 'Halcones', colors: ['#B3202A', '#F5F0E6'] };
   }
-
-  function rrect(g, x, y, w, h, r) {
-    g.beginPath();
-    g.moveTo(x + r, y);
-    g.arcTo(x + w, y, x + w, y + h, r);
-    g.arcTo(x + w, y + h, x, y + h, r);
-    g.arcTo(x, y + h, x, y, r);
-    g.arcTo(x, y, x + w, y, r);
-    g.closePath();
-  }
-
-  // Aclara (amt > 0) u oscurece (amt < 0) un color.
-  function shade(hex, amt) {
-    const [r, gg, b] = hexRgb(hex);
-    const f = amt < 0 ? (v) => Math.round(v * (1 + amt)) : (v) => Math.round(v + (255 - v) * amt);
-    return `rgb(${f(r)},${f(gg)},${f(b)})`;
-  }
-
-  // Articulación de dos tramos (brazo o pierna): devuelve el codo o la rodilla.
-  function ik(sx, sy, hx, hy, a, b, side) {
-    let dx = hx - sx, dy = hy - sy;
-    let d = Math.hypot(dx, dy);
-    const maxd = a + b - 0.01;
-    if (d > maxd) { dx *= maxd / d; dy *= maxd / d; d = maxd; hx = sx + dx; hy = sy + dy; }
-    d = Math.max(0.01, d);
-    const cosA = (a * a + d * d - b * b) / (2 * a * d);
-    const A = Math.acos(Math.max(-1, Math.min(1, cosA)));
-    const ang = Math.atan2(dy, dx) + side * A;
-    return { ex: sx + Math.cos(ang) * a, ey: sy + Math.sin(ang) * a, hx, hy };
-  }
-
-  function limb(g, x1, y1, x2, y2, w, fill, edge) {
-    g.lineCap = 'round';
-    g.strokeStyle = edge; g.lineWidth = w + 1.1;
-    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
-    g.strokeStyle = fill; g.lineWidth = w;
-    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
-  }
-
-  function starShape(g, x, y, r) {
-    g.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const a = -Math.PI / 2 + i * Math.PI / 5;
-      const rr = i % 2 ? r * .45 : r;
-      g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
-    }
-    g.closePath();
-  }
-
-  // Personaje con proporciones realistas, con los pies en (c.x, c.y).
-  // pose: idle | run | guard | dribble | pass | catch | shoot
-  function drawChar(g, c, now) {
-    const L = c.look;
-    const t = now / 1000 + (L.phase || 0);
-    const run = c.pose === 'run';
-    const cyc = t * 11;
-    const bob = run ? Math.abs(Math.sin(cyc)) * 1.6 : Math.sin(t * 2.4) * 0.45;
-    const jump = c.jump || 0;
-    const skin = L.skin, skinD = shade(skin, -0.28), skinL = shade(skin, 0.14);
-    const jer = L.colors[0], trim = L.colors[1];
-    const edge = 'rgba(18,10,4,.5)';
-
-    g.save();
-    if (c.alpha != null) g.globalAlpha = c.alpha;
-    // Sombra y aro en el piso
-    g.fillStyle = 'rgba(0,0,0,.3)';
-    g.beginPath(); g.ellipse(c.x + 1.5, c.y + .5, 11 - jump * .15, 4, 0, 0, Math.PI * 2); g.fill();
-    if (c.ring) {
-      g.strokeStyle = c.ring; g.lineWidth = 2.4;
-      g.beginPath(); g.ellipse(c.x, c.y, 17, 6.5, 0, 0, Math.PI * 2); g.stroke();
-    }
-    g.translate(c.x, c.y - jump);
-    g.scale(L.h || 1, L.h || 1);
-
-    // Piernas: cadera -> rodilla -> tobillo
-    const tuck = jump > 3 ? 5 : 0;
-    [-1, 1].forEach((s) => {
-      const ph = run ? Math.sin(cyc + (s > 0 ? Math.PI : 0)) : 0;
-      const lift = run ? Math.max(0, ph) * 4.5 : tuck;
-      const fx = s * 4.4 + (run ? ph * 1.3 : 0);
-      const fy = -lift;
-      const hip = { x: s * 4, y: -29 - bob };
-      const k = ik(hip.x, hip.y, fx, fy - 3.5, 13.4, 13, -s);
-      limb(g, hip.x, hip.y, k.ex, k.ey, 5.6, skin, skinD);
-      limb(g, k.ex, k.ey, k.hx, k.hy, 4.4, skin, skinD);
-      // Media
-      limb(g, k.hx + (k.ex - k.hx) * .32, k.hy + (k.ey - k.hy) * .32, k.hx, k.hy, 4.5, '#F1F1EE', 'rgba(0,0,0,.25)');
-      // Zapatilla
-      rrect(g, fx - 4.2, fy - 4.3, 8.6, 4.4, 2);
-      g.fillStyle = '#1E1E24'; g.fill();
-      g.fillStyle = '#ECECEC'; g.fillRect(fx - 4.2, fy - 1.1, 8.6, 1.1);
-      g.fillStyle = trim; g.fillRect(fx - 1.8, fy - 3.6, 3.2, 1.2);
+  // Jugadores decorativos de la portada: tu jugador y compañeros con los colores del club actual.
+  function buildHero() {
+    const team = heroTeam();
+    const looks = HERO_SPOTS.map((_, i) => (i === 0 && S.me ? starLook(team.colors) : lookFor(team, i)));
+    const key = JSON.stringify(looks);
+    if (key === heroKey) return;
+    heroKey = key;
+    disposeAll(cast.hero);
+    looks.forEach((lk, i) => {
+      const p = P3.create(lk);
+      p.setCourtPosition(HERO_SPOTS[i][0], HERO_SPOTS[i][1]).setPose(HERO_SPOTS[i][2]);
+      p.faceCourt(i === 0 ? 245 : HERO_SPOTS[0][0], i === 0 ? 266 : HERO_SPOTS[0][1]);
+      p.setStar(false);
+      cast.hero.push(p);
     });
-
-    // Short largo de básquet
-    const w = -33 - bob;
-    g.beginPath();
-    g.moveTo(-8.6, w); g.lineTo(8.6, w); g.lineTo(10.3, w + 15.5); g.lineTo(1.3, w + 16);
-    g.lineTo(0, w + 12); g.lineTo(-1.3, w + 16); g.lineTo(-10.3, w + 15.5); g.closePath();
-    let grd = g.createLinearGradient(-10, 0, 10, 0);
-    grd.addColorStop(0, shade(jer, 0.12)); grd.addColorStop(1, shade(jer, -0.22));
-    g.fillStyle = grd; g.fill();
-    g.strokeStyle = edge; g.lineWidth = .8; g.stroke();
-    g.strokeStyle = trim; g.lineWidth = 1.6;
-    g.beginPath(); g.moveTo(-8.4, w + 1.5); g.lineTo(-10, w + 15); g.stroke();
-    g.beginPath(); g.moveTo(8.4, w + 1.5); g.lineTo(10, w + 15); g.stroke();
-    g.strokeStyle = shade(jer, -0.3); g.lineWidth = 1.4;
-    g.beginPath(); g.moveTo(-8.4, w + .9); g.lineTo(8.4, w + .9); g.stroke();
-
-    // Torso: hombros a la vista y camiseta sin mangas
-    const y0 = -52 - bob;
-    g.fillStyle = skin;
-    g.beginPath(); g.moveTo(-10.4, y0 + 2); g.lineTo(10.4, y0 + 2); g.lineTo(8.2, y0 + 17); g.lineTo(-8.2, y0 + 17); g.closePath(); g.fill();
-    g.fillStyle = skinL;
-    g.beginPath(); g.ellipse(-9.4, y0 + 3, 3.4, 3, 0, 0, Math.PI * 2); g.fill();
-    g.fillStyle = skin;
-    g.beginPath(); g.ellipse(9.4, y0 + 3, 3.4, 3, 0, 0, Math.PI * 2); g.fill();
-    g.beginPath();
-    g.moveTo(-6, y0); g.lineTo(-3.4, y0);
-    g.quadraticCurveTo(0, y0 + 6.2, 3.4, y0); g.lineTo(6, y0);
-    g.quadraticCurveTo(6.3, y0 + 7.5, 9.2, y0 + 10); g.lineTo(8.6, y0 + 19.5);
-    g.lineTo(-8.6, y0 + 19.5); g.lineTo(-9.2, y0 + 10);
-    g.quadraticCurveTo(-6.3, y0 + 7.5, -6, y0); g.closePath();
-    grd = g.createLinearGradient(-9, 0, 9, 0);
-    grd.addColorStop(0, shade(jer, 0.15)); grd.addColorStop(.55, jer); grd.addColorStop(1, shade(jer, -0.25));
-    g.fillStyle = grd; g.fill();
-    g.strokeStyle = edge; g.lineWidth = .8; g.stroke();
-    g.strokeStyle = trim; g.lineWidth = 1.2;
-    g.beginPath(); g.moveTo(-3.4, y0 + .3); g.quadraticCurveTo(0, y0 + 6.4, 3.4, y0 + .3); g.stroke();
-    g.beginPath(); g.moveTo(6, y0 + .3); g.quadraticCurveTo(6.3, y0 + 7.5, 9, y0 + 9.8); g.stroke();
-    g.beginPath(); g.moveTo(-6, y0 + .3); g.quadraticCurveTo(-6.3, y0 + 7.5, -9, y0 + 9.8); g.stroke();
-    g.fillStyle = trim;
-    g.font = '700 8.5px "Barlow Condensed", "Arial Narrow", sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(String(L.num), 0, y0 + 11.5);
-
-    // Brazos: hombro -> codo -> mano
-    const pose = c.pose;
-    [-1, 1].forEach((s) => {
-      const sw = run ? Math.sin(cyc + (s > 0 ? 0 : Math.PI)) : 0;
-      let hx, hy;
-      switch (pose) {
-        case 'run': hx = s * 10.5 + sw * 1.5; hy = -31 + sw * 3.5; break;
-        case 'guard': hx = s * 20; hy = -47; break;
-        case 'dribble': if (s > 0) { hx = 13; hy = -23; } else { hx = -11.5; hy = -28.5; } break;
-        case 'pass': hx = s * 5.5; hy = -38; break;
-        case 'catch': hx = s * 6.5; hy = -57; break;
-        case 'shoot': if (s > 0) { hx = 2.5; hy = -77; } else { hx = -2.5; hy = -72; } break;
-        default: hx = s * 11.5; hy = -27.5;
-      }
-      const sx = s * 9.6, sy = y0 + 3.2;
-      const k = ik(sx, sy, hx, hy - bob, 10.6, 10, pose === 'guard' || pose === 'catch' || pose === 'shoot' ? s : -s);
-      limb(g, sx, sy, k.ex, k.ey, 4.4, skin, skinD);
-      limb(g, k.ex, k.ey, k.hx, k.hy, 3.7, skin, skinD);
-      g.fillStyle = skin; g.strokeStyle = skinD; g.lineWidth = .7;
-      g.beginPath(); g.arc(k.hx, k.hy, 2.3, 0, Math.PI * 2); g.fill(); g.stroke();
+    cast.hero[0].setRing('#FFC53D');
+    HERO_RIVAL_SPOTS.forEach((s, i) => {
+      const p = P3.create(lookFor(HERO_RIVAL, i), { rival: true });
+      p.setCourtPosition(s[0], s[1]).setPose('guard').faceCourt(HERO_SPOTS[0][0], HERO_SPOTS[0][1]);
+      cast.hero.push(p);
     });
-
-    // Cuello y cabeza
-    const hy = y0 - 8.6;
-    g.fillStyle = skinD; g.fillRect(-2.4, y0 - 4.2, 4.8, 5);
-    g.fillStyle = skin; g.fillRect(-2.1, y0 - 4.4, 4.2, 4.2);
-    if (L.style === 'mono') { g.fillStyle = L.hair; g.beginPath(); g.arc(0, hy - 7.2, 2.6, 0, Math.PI * 2); g.fill(); }
-    g.fillStyle = skin;
-    g.beginPath(); g.ellipse(-5.1, hy + .6, 1.3, 1.9, 0, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.ellipse(5.1, hy + .6, 1.3, 1.9, 0, 0, Math.PI * 2); g.fill();
-    grd = g.createRadialGradient(-1.8, hy - 2.2, .5, 0, hy, 7);
-    grd.addColorStop(0, skinL); grd.addColorStop(1, skinD);
-    g.fillStyle = grd;
-    g.beginPath(); g.ellipse(0, hy, 5.2, 6.2, 0, 0, Math.PI * 2); g.fill();
-    g.strokeStyle = edge; g.lineWidth = .7; g.stroke();
-
-    // Barba
-    if (L.beard) {
-      g.fillStyle = L.hair; g.globalAlpha *= .85;
-      g.beginPath();
-      g.moveTo(-4.9, hy + .6);
-      g.quadraticCurveTo(-4.6, hy + 6.8, 0, hy + 6.6);
-      g.quadraticCurveTo(4.6, hy + 6.8, 4.9, hy + .6);
-      g.quadraticCurveTo(3.4, hy + 3.2, 0, hy + 3.1);
-      g.quadraticCurveTo(-3.4, hy + 3.2, -4.9, hy + .6);
-      g.fill();
-      g.globalAlpha = c.alpha == null ? 1 : c.alpha;
-    }
-
-    // Pelo
-    g.fillStyle = L.hair;
-    const cap = (alpha, top) => {
-      g.save(); g.globalAlpha *= alpha;
-      g.beginPath(); g.ellipse(0, hy - .4 - (top || 0), 5.6, 6.5 + (top || 0), 0, Math.PI * 1.02, Math.PI * 1.98); g.closePath(); g.fill();
-      g.restore();
-    };
-    if (L.style === 'corto' || L.style === 'mono') {
-      cap(1);
-      g.save(); g.globalAlpha *= .45; g.fillRect(-5.3, hy - 1.6, 1.4, 2.6); g.fillRect(3.9, hy - 1.6, 1.4, 2.6); g.restore();
-    } else if (L.style === 'rapado') {
-      cap(.55);
-    } else if (L.style === 'rulos') {
-      cap(1, 1.4);
-      for (let i = -2; i <= 2; i++) { g.beginPath(); g.arc(i * 2.3, hy - 6.6 + Math.abs(i) * .9, 2, 0, Math.PI * 2); g.fill(); }
-    } else if (L.style === 'trenzas') {
-      cap(1);
-      g.strokeStyle = shade(L.hair, 0.35); g.lineWidth = .5;
-      for (let i = -2; i <= 2; i++) { g.beginPath(); g.moveTo(i * 1.9, hy - 6.6); g.lineTo(i * 2.3, hy - 2); g.stroke(); }
-    } else if (L.style === 'pelado') {
-      g.fillStyle = 'rgba(255,255,255,.3)';
-      g.beginPath(); g.ellipse(-1.8, hy - 3.8, 2, 1.1, -0.4, 0, Math.PI * 2); g.fill();
-    }
-
-    // Cara
-    const blink = (Math.floor(t * 10) % 41) === 0;
-    g.fillStyle = '#16100C';
-    if (blink) { g.fillRect(-2.8, hy + .1, 1.6, .5); g.fillRect(1.2, hy + .1, 1.6, .5); }
-    else {
-      g.beginPath(); g.arc(-1.95, hy + .3, .78, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.arc(1.95, hy + .3, .78, 0, Math.PI * 2); g.fill();
-    }
-    g.strokeStyle = L.style === 'pelado' ? shade(skin, -0.5) : L.hair; g.lineWidth = .85; g.lineCap = 'round';
-    const inner = c.rival ? -1.1 : -1.9;
-    g.beginPath(); g.moveTo(-3.3, hy - 1.8); g.lineTo(-0.9, hy + inner); g.stroke();
-    g.beginPath(); g.moveTo(3.3, hy - 1.8); g.lineTo(0.9, hy + inner); g.stroke();
-    g.strokeStyle = skinD; g.lineWidth = .7;
-    g.beginPath(); g.moveTo(.2, hy + .8); g.lineTo(.6, hy + 2.6); g.lineTo(-.3, hy + 2.8); g.stroke();
-    g.strokeStyle = shade(skin, -0.45); g.lineWidth = .75;
-    g.beginPath();
-    if (c.rival) { g.moveTo(-1.4, hy + 4.1); g.lineTo(1.4, hy + 4.1); }
-    else { g.moveTo(-1.5, hy + 3.8); g.quadraticCurveTo(0, hy + 4.7, 1.5, hy + 3.8); }
-    g.stroke();
-
-    // Estrella sobre tu jugador
-    if (L.star && c.showStar) {
-      starShape(g, 0, hy - 13, 4.6);
-      g.fillStyle = '#FFC53D'; g.fill();
-      g.strokeStyle = '#7A5200'; g.lineWidth = .8; g.stroke();
-    }
-    g.restore();
+    scene.setTeams([team.colors, HERO_RIVAL.colors]);
+    if (current === 'home') cast.hero.forEach((p) => scene.add(p.object));
+  }
+  function enterHome() {
+    mountCanvas($('hero-court'));
+    cast.mine.concat(cast.rivals).forEach((p) => scene.remove(p.object));
+    cast.hero.forEach((p) => scene.add(p.object));
+    scene.setLevel({ walls: [] });
+    scene.overlay.clear();
+    scene.overlay.line([{ x: HERO_SPOTS[0][0], y: HERO_SPOTS[0][1] }, { x: 245, y: 266 }], { color: '#FFFFFF', width: 3, arrow: true, alpha: 0.9 });
+    scene.setCamera({ mode: 'cinematic', instant: true });
+  }
+  function heroFrame(now, dt) {
+    cast.hero.forEach((p) => p.update(now));
+    if (cast.hero.length) placeBall(handBall(cast.hero[0]));
+    scene.update(now, dt);
+    scene.render();
   }
 
-  function drawNameTag(g, x, y, text) {
-    g.save();
-    g.font = '700 10px "Barlow", system-ui, sans-serif';
-    const w = g.measureText(text).width + 12;
-    rrect(g, x - w / 2, y - 9, w, 15, 7.5);
-    g.fillStyle = 'rgba(14,26,49,.88)'; g.fill();
-    g.fillStyle = '#F7EEDF';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(text, x, y - 1.2);
-    g.restore();
+  // ---------------------------------------------------------------- Partida: jugadores y cámara
+  function buildCast() {
+    disposeAll(cast.mine); disposeAll(cast.rivals);
+    cast.hero.forEach((p) => scene.remove(p.object));
+    G.myLooks.forEach((lk) => { const p = P3.create(lk); scene.add(p.object); cast.mine.push(p); });
+    G.rivalLooks.forEach((lk) => { const p = P3.create(lk, { rival: true }); scene.add(p.object); cast.rivals.push(p); });
+    scene.setTeams([G.mine.colors, G.rival.colors]);
+    scene.setLevel({ walls: G.level.walls || [] });
+    scene.overlay.clear();
+  }
+  function enterGame() { mountCanvas(stage); }
+
+  // Puntos que la cámara debe encuadrar en modo plan: compañeros, defensores, obstáculos (el aro
+  // lo agrega la escena). Los obstáculos miden 10 de alto: se declaran con h negativa para que la
+  // escena no les sume la altura de un jugador.
+  function framingPoints(gt) {
+    const pts = [];
+    G.st.pos.forEach((p, i) => { if (i !== G.st.holder) pts.push({ x: p[0], y: p[1] }); });
+    (G.level.defenders || []).forEach((d) => pts.push(E.defenderPos(d, gt)));
+    (G.level.walls || []).forEach((w) => { pts.push({ x: w[0], y: w[1], h: -42 }); pts.push({ x: w[2], y: w[3], h: -42 }); });
+    return pts;
+  }
+  function planCamera(instant) {
+    const hp = G.st.pos[G.st.holder];
+    scene.setCamera({ mode: 'holder', holder: { x: hp[0], y: hp[1] }, points: framingPoints(G.st.t), instant: !!instant });
+  }
+  // Arranca la animación de un movimiento ya resuelto por el motor.
+  function startMove(res) {
+    G.anim = { res, real0: performance.now(), done: false, release: null };
+    G.mode = 'anim';
+    G.drag = null;
+    $('tipbar').textContent = '';
+    // La cámara sigue la pelota sin perder de vista al que la jugó (queda entre los puntos a encuadrar)
+    const hp = G.st.pos[G.st.holder];
+    scene.setCamera({ mode: 'follow', target: { x: hp[0], y: hp[1], h: 30 }, points: framingPoints(G.st.t).concat([{ x: hp[0], y: hp[1] }]) });
   }
 
-  function drawWalls(g) {
-    for (const w of G.level.walls || []) {
-      g.save();
-      g.lineCap = 'round';
-      g.strokeStyle = 'rgba(0,0,0,.3)'; g.lineWidth = E.WALL_T + 2;
-      g.beginPath(); g.moveTo(w[0] + 2, w[1] + 3); g.lineTo(w[2] + 2, w[3] + 3); g.stroke();
-      g.strokeStyle = '#22335A'; g.lineWidth = E.WALL_T;
-      g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
-      g.strokeStyle = '#FFC53D'; g.lineWidth = 3; g.setLineDash([6, 6]);
-      g.beginPath(); g.moveTo(w[0], w[1]); g.lineTo(w[2], w[3]); g.stroke();
-      g.restore();
-    }
-  }
+  // ---------------------------------------------------------------- Partida: overlays sobre el piso
+  const defIndexNear = (q) => {
+    let best = -1, bd = Infinity;
+    (G.level.defenders || []).forEach((d, k) => {
+      const p = E.defenderPos(d, G.st.t);
+      const dd = E.dist(p.x, p.y, q.x, q.y);
+      if (dd < bd) { bd = dd; best = k; }
+    });
+    return best;
+  };
+  const hoopTop = { x: HOOP.x, y: HOOP.y, h: HOOP_H };
+  let overlayKey = '';
+  function drawOverlay(now, gt, defPos) {
+    const ov = scene.overlay;
+    const planning = G.mode === 'plan' || G.mode === 'charge';
+    if (!planning) { if (overlayKey) { ov.clear(); overlayKey = ''; } return; }
+    const lv = G.level;
+    const animated = G.hint || (lv.defenders || []).some((d) => d.path && d.speed);
+    const key = [G.mode, JSON.stringify(G.drag), G.hint, G.st.holder, G.st.moves, animated ? Math.floor(now / 90) : 0].join('|');
+    if (key === overlayKey) return;
+    overlayKey = key;
+    ov.clear();
+    const hp = G.st.pos[G.st.holder];
+    const a = { x: hp[0], y: hp[1] };
 
-  // Ruta de cada defensor que se mueve, con una flecha hacia donde va ahora.
-  function drawDefenderRoutes(g, gt, now) {
-    for (const d of G.level.defenders || []) {
-      if (!d.path) continue;
-      const pts = [[d.x, d.y]].concat(d.path);
-      g.save();
-      g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 2; g.setLineDash([3, 6]);
-      g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
-      for (const p of pts.slice(1)) g.lineTo(p[0], p[1]);
-      g.stroke();
+    // Rutas de los defensores que se mueven, con una flecha hacia donde van y una huella que anticipa
+    (lv.defenders || []).forEach((d, k) => {
+      ov.circle(defPos[k], E.REACH + E.BALL_R, { color: '#F0565B', dashed: true, alpha: 0.6, width: 1.4 });
+      if (!d.path) return;
+      ov.line([[d.x, d.y]].concat(d.path), { color: '#FFFFFF', width: 2, dashed: true, alpha: 0.5 });
       const p0 = E.defenderPos(d, gt), p1 = E.defenderPos(d, gt + 0.08);
       const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
-      const ax = p0.x + Math.cos(ang) * 26, ay = p0.y + Math.sin(ang) * 26;
-      g.setLineDash([]); g.fillStyle = 'rgba(255,255,255,.95)';
-      g.beginPath();
-      g.moveTo(ax + Math.cos(ang) * 8, ay + Math.sin(ang) * 8);
-      g.lineTo(ax + Math.cos(ang + 2.4) * 7, ay + Math.sin(ang + 2.4) * 7);
-      g.lineTo(ax + Math.cos(ang - 2.4) * 7, ay + Math.sin(ang - 2.4) * 7);
-      g.fill();
-      // Huella que adelanta su movimiento
-      const gp = E.defenderPos(d, gt + (now / 1000) % 2.4);
-      g.fillStyle = 'rgba(240,86,91,.28)';
-      g.beginPath(); g.ellipse(gp.x, gp.y, 12, 5, 0, 0, Math.PI * 2); g.fill();
-      g.restore();
-    }
-  }
+      ov.line([p0, { x: p0.x + Math.cos(ang) * 34, y: p0.y + Math.sin(ang) * 34 }], { color: '#FFFFFF', width: 2.6, arrow: true, alpha: 0.95 });
+      ov.disc(E.defenderPos(d, gt + (now / 1000) % 2.4), 12, { color: '#F0565B', alpha: 0.28 });
+    });
 
-  function arrowLine(g, a, b, color, opts) {
-    opts = opts || {};
-    g.save();
-    g.lineCap = 'round';
-    g.setLineDash(opts.dash || []);
-    g.strokeStyle = 'rgba(14,26,49,.5)'; g.lineWidth = 8;
-    pathLine(g, a, b, opts.arc); g.stroke();
-    g.strokeStyle = color; g.lineWidth = 4.5;
-    pathLine(g, a, b, opts.arc); g.stroke();
-    if (!opts.arc) {
-      const ang = Math.atan2(b.y - a.y, b.x - a.x);
-      g.setLineDash([]); g.fillStyle = color;
-      g.beginPath();
-      g.moveTo(b.x + Math.cos(ang) * 3, b.y + Math.sin(ang) * 3);
-      g.lineTo(b.x + Math.cos(ang + 2.5) * 11, b.y + Math.sin(ang + 2.5) * 11);
-      g.lineTo(b.x + Math.cos(ang - 2.5) * 11, b.y + Math.sin(ang - 2.5) * 11);
-      g.fill();
+    // Ayuda: la mejor jugada, latiendo
+    const best = G.mode === 'plan' ? currentHint() : null;
+    if (best) {
+      const alpha = 0.55 + 0.3 * Math.sin(now / 220);
+      if (best.chain[1] === 'H') ov.arc(a, hoopTop, HOOP_H + 40, { color: '#9FE8C3', dashed: true, alpha });
+      else { const bp = G.st.pos[best.chain[1]]; ov.line([a, { x: bp[0], y: bp[1] }], { color: '#9FE8C3', width: 3, dashed: true, arrow: true, alpha }); }
     }
-    g.restore();
-  }
-  function pathLine(g, a, b, arc) {
-    g.beginPath(); g.moveTo(a.x, a.y);
-    if (arc) {
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - Math.min(70, E.dist(a.x, a.y, b.x, b.y) * .3);
-      g.quadraticCurveTo(mx, my, b.x, b.y);
-    } else g.lineTo(b.x, b.y);
-  }
 
-  // Cómo se ve el movimiento que se está arrastrando.
-  function drawDragPreview(g) {
-    const d = G.drag;
-    if (!d || !d.kind) return;
-    const hp = G.st.pos[G.st.holder];
-    const a = { x: hp[0], y: hp[1] };
-    const range = E.rangeFor(G.level, G.st.holder);
-    if (d.kind === 'shot') {
+    // Previsualización del movimiento que se está arrastrando
+    const d = G.mode === 'plan' ? G.drag : null;
+    if (d && d.kind === 'shot') {
+      const range = E.rangeFor(lv, G.st.holder);
       const far = E.dist(a.x, a.y, HOOP.x, HOOP.y) > range;
-      g.fillStyle = far ? 'rgba(240,86,91,.16)' : 'rgba(60,193,127,.18)';
-      g.beginPath(); g.arc(HOOP.x, HOOP.y, range, 0, Math.PI * 2); g.fill();
-      arrowLine(g, a, { x: d.x, y: d.y }, far ? '#F0565B' : '#FFC53D', { arc: true, dash: [2, 11] });
-    } else if (d.kind === 'pass') {
+      ov.circle(HOOP, range, { color: far ? '#F0565B' : '#3CC17F', fill: true, alpha: 0.55, width: 2 });
+      ov.arc(a, { x: d.x, y: d.y, h: HOOP_H }, HOOP_H + 40, { color: far ? '#F0565B' : '#FFC53D', dashed: true });
+    } else if (d && d.kind === 'pass') {
       const bp = G.st.pos[d.to];
       const b = { x: bp[0], y: bp[1] };
-      const hit = E.wallHit(G.level, a.x, a.y, b.x, b.y);
-      if (hit !== null) {
-        const m = { x: a.x + (b.x - a.x) * hit, y: a.y + (b.y - a.y) * hit };
-        arrowLine(g, a, m, '#F0565B');
-      } else arrowLine(g, a, b, '#FFFFFF');
-    } else if (d.kind === 'dribble') {
-      const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
-      g.save();
-      g.strokeStyle = 'rgba(159,232,195,.45)'; g.lineWidth = 1.5; g.setLineDash([3, 5]);
-      g.beginPath(); g.arc(a.x, a.y, E.dribbleMaxFor(G.level, G.st.holder), 0, Math.PI * 2); g.stroke();
-      g.restore();
-      arrowLine(g, a, tgt, '#9FE8C3', { dash: [7, 7] });
-      g.fillStyle = 'rgba(159,232,195,.35)';
-      g.beginPath(); g.ellipse(tgt.x, tgt.y, 13, 5.5, 0, 0, Math.PI * 2); g.fill();
+      const hit = E.wallHit(lv, a.x, a.y, b.x, b.y);
+      if (hit !== null) ov.line([a, { x: a.x + (b.x - a.x) * hit, y: a.y + (b.y - a.y) * hit }], { color: '#F0565B', width: 3.2, arrow: true });
+      else ov.line([a, b], { color: '#FFFFFF', width: 3.2, arrow: true });
+    } else if (d && d.kind === 'dribble') {
+      const tgt = E.dribbleTarget(lv, G.st, d.x, d.y);
+      ov.circle(a, E.dribbleMaxFor(lv, G.st.holder), { color: '#9FE8C3', dashed: true, alpha: 0.45, width: 1.4 });
+      ov.line([a, tgt], { color: '#9FE8C3', width: 3, dashed: true, arrow: true });
+      ov.disc(tgt, 13, { color: '#9FE8C3', alpha: 0.35 });
     }
+    // Cargando fuerza: la dirección ya quedó fijada
+    if (G.mode === 'charge' && G.charge) ov.arc(a, { x: G.charge.aim.x, y: G.charge.aim.y, h: HOOP_H }, HOOP_H + 40, { color: '#FFC53D', dashed: true });
   }
 
-  function drawHint(g, now) {
-    const best = currentHint();
-    if (!best || G.mode !== 'plan') return;
-    const hp = G.st.pos[G.st.holder];
-    const a = { x: hp[0], y: hp[1] };
-    g.save();
-    g.globalAlpha = .55 + .3 * Math.sin(now / 220);
-    if (best.chain[1] === 'H') arrowLine(g, a, HOOP, '#9FE8C3', { arc: true, dash: [2, 11] });
-    else { const bp = G.st.pos[best.chain[1]]; arrowLine(g, a, { x: bp[0], y: bp[1] }, '#9FE8C3', { dash: [10, 8] }); }
-    g.restore();
+  // Cartel con el nombre del poseedor, sobre su cabeza (div HTML posicionado con la cámara).
+  const nameTag = $('nametag');
+  function placeNameTag(visible) {
+    if (!visible) { nameTag.hidden = true; return; }
+    const holder = G.st.holder, L = G.myLooks[holder], hp = G.st.pos[holder];
+    const s = scene.courtToScreen(hp[0], hp[1], P3.HEIGHT * (L.h || 1) + 3);
+    const r = cv.getBoundingClientRect();
+    if (s.depth < 0 || s.x < 0 || s.y < 0 || s.x > r.width || s.y > r.height) { nameTag.hidden = true; return; }
+    nameTag.textContent = L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`;
+    nameTag.style.left = s.x + 'px';
+    nameTag.style.top = s.y + 'px';
+    nameTag.hidden = false;
   }
 
-  function render(now) {
-    requestAnimationFrame(render);
-    if (current !== 'game' || !G.level || !floor) return;
-    const g = ctx;
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.drawImage(floor, 0, 0);
-    g.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
-
+  // ---------------------------------------------------------------- Partida: un fotograma
+  function gameFrame(now, dt) {
     const lv = G.level;
-    const A = G.anim;
-    const leg = A ? A.res.leg : null;
+    let A = G.anim, leg = A ? A.res.leg : null;
     // Tiempo del partido: congelado salvo mientras se ejecuta un movimiento
     let gt = G.st.t, f = 0;
     if (A) {
@@ -1245,80 +980,102 @@
       gt = Math.min(leg.t1, leg.t0 + el);
       f = leg.t1 > leg.t0 ? (gt - leg.t0) / (leg.t1 - leg.t0) : 1;
       if (el >= leg.t1 - leg.t0 && !A.done) { A.done = true; onMoveEnd(A); }
+      // Movimiento correcto: ya se juega desde el nuevo estado
+      if (!G.anim) { A = null; leg = null; gt = G.st.t; f = 0; }
     }
-
-    if (G.mode === 'charge') updateCharge(now);
-    drawWalls(g);
-    if (!A) drawDefenderRoutes(g, gt, now);
-
-    // Alcance de los defensores (en el piso)
+    const st = G.st, holder = st.holder;
+    const r = A ? A.res : null;
+    const ended = !!(A && A.done);
+    const planning = G.mode === 'plan' || G.mode === 'charge';
+    const actor = leg && leg.who != null ? leg.who : holder;
     const defPos = (lv.defenders || []).map((d) => E.defenderPos(d, gt));
-    if (!A) {
-      g.save();
-      g.strokeStyle = 'rgba(240,86,91,.55)'; g.lineWidth = 1.5; g.setLineDash([3, 4]);
-      defPos.forEach((p) => { g.beginPath(); g.ellipse(p.x, p.y, E.REACH + E.BALL_R, (E.REACH + E.BALL_R) * .55, 0, 0, Math.PI * 2); g.stroke(); });
-      g.restore();
-    }
 
-    const swish = A && A.res.scored && A.done ? Math.min(1, (now - A.doneAt) / 400) : 0;
-    drawHoop(g, swish);
-    if (G.hint) drawHint(g, now);
-    if (G.mode === 'plan') drawDragPreview(g);
-    if (G.mode === 'charge' && G.charge) {
-      const hp0 = G.st.pos[G.st.holder];
-      arrowLine(g, { x: hp0[0], y: hp0[1] }, G.charge.aim, '#FFC53D', { arc: true, dash: [2, 11] });
-    }
-
-    // Personajes, ordenados por profundidad
-    const chars = [];
-    const holder = G.st.holder;
-    G.st.pos.forEach((p, i) => {
-      let x = p[0], y = p[1], pose = 'idle', jump = 0, ring = null;
-      if (i === holder) { pose = 'dribble'; ring = G.mode === 'plan' || G.mode === 'charge' ? '#FFC53D' : null; }
-      if (leg && leg.who === i) {
-        if (leg.type === 'dribble') { x = leg.from.x + (leg.to.x - leg.from.x) * f; y = leg.from.y + (leg.to.y - leg.from.y) * f; pose = f < 1 ? 'run' : 'dribble'; }
-        if (leg.type === 'pass') pose = f < .35 ? 'pass' : 'idle';
-        if (leg.type === 'shot') { pose = leg.blocked ? 'catch' : 'shoot'; jump = Math.sin(Math.PI * Math.min(1, f * 1.6)) * 12; }
+    // Jugadores propios: posición, pose, dirección, aro y estrella
+    st.pos.forEach((p, i) => {
+      const P = cast.mine[i];
+      let x = p[0], y = p[1], pose = i === holder ? 'dribble' : 'idle', jump = 0, ring = null, face = HOOP;
+      if (i === holder && planning) ring = '#FFC53D';
+      if (leg && actor === i) {
+        if (leg.type === 'dribble') {
+          x = leg.from.x + (leg.to.x - leg.from.x) * f; y = leg.from.y + (leg.to.y - leg.from.y) * f;
+          pose = f < 1 ? 'run' : 'dribble'; face = f < 1 ? leg.to : HOOP;
+        } else if (leg.type === 'pass') { pose = f < 0.35 ? 'pass' : 'idle'; face = leg.to; }
+        else { pose = leg.blocked ? 'catch' : 'shoot'; jump = Math.sin(Math.PI * Math.min(1, f * 1.6)) * 12; }
       }
-      if (leg && leg.type === 'pass' && leg.target === i) pose = 'catch';
+      if (leg && leg.type === 'pass' && leg.target === i) { pose = 'catch'; face = leg.from; }
+      if (ended) {
+        jump = 0;
+        if (r.scored) pose = i === actor ? 'celebrate' : (i % 2 ? 'catch' : 'celebrate');
+        else if (i === actor) pose = 'sad';
+      }
       if (G.drag && G.drag.kind === 'pass' && G.drag.to === i) ring = '#FFFFFF';
-      chars.push({ x, y, pose, jump, ring, look: G.myLooks[i], id: i, showStar: i === G.level.starIdx && !(i === holder && (G.mode === 'plan' || G.mode === 'charge')) });
+      P.setCourtPosition(x, y);
+      turnTo(P, face.x, face.y, dt);
+      P.setPose(pose); P.setJump(jump); P.setRing(ring);
+      P.setStar(i === lv.starIdx && !(i === holder && planning));
+      P.update(now);
     });
-    (lv.defenders || []).forEach((d, k) => {
-      const p = defPos[k];
-      const moving = !!(A && d.path && d.speed && !A.done);
-      chars.push({ x: p.x, y: p.y, pose: moving ? 'run' : 'guard', look: G.rivalLooks[k], rival: true });
-    });
-    chars.sort((a, b) => a.y - b.y);
-    chars.forEach((c) => drawChar(g, c, now));
 
-    // Pelota
-    const hp = G.st.pos[holder];
-    if (!A || leg.type === 'dribble') {
-      let bx = hp[0], by = hp[1];
-      if (leg && leg.type === 'dribble') { bx = leg.from.x + (leg.to.x - leg.from.x) * f; by = leg.from.y + (leg.to.y - leg.from.y) * f; }
-      drawBall(g, bx + 14, by - 1, 2 + Math.abs(Math.sin(now / 140)) * 17, .9);
+    // Pelota: centro en coordenadas de cancha + altura
+    let ball;
+    if (ended && !r.ok) {
+      const k = Math.min(1, (now - A.doneAt) / 350);
+      const fp = r.failPos, h0 = leg.type === 'pass' ? 33 : (leg.board ? 80 : 20);
+      ball = { x: fp.x, y: fp.y, h: 3.2 + (h0 - 3.2) * (1 - k) };
+    } else if (ended && r.scored) {
+      const k = Math.min(1, (now - A.doneAt) / 600);
+      ball = { x: HOOP.x, y: HOOP.y, h: HOOP_H - (HOOP_H - 3.2) * k * k };
+      scene.hoop.swish(Math.min(1, k * 1.5));
+    } else if (!A || leg.type === 'dribble') {
+      ball = handBall(cast.mine[actor]);
     } else if (leg.type === 'pass') {
-      drawBall(g, leg.from.x + (leg.to.x - leg.from.x) * f, leg.from.y + (leg.to.y - leg.from.y) * f, 34);
-    } else if (leg.type === 'shot') {
-      if (leg.blocked) {
-        drawBall(g, leg.from.x + 16 * f, leg.from.y + 8 * f, 62 * (1 - f) + 4);
-      } else if (A.done && A.res.scored) {
-        const k = Math.min(1, (now - A.doneAt) / 300);
-        drawBall(g, HOOP.x, HOOP.y + k * 12, 0, 1 - k * .15);
-      } else {
-        const hgt = Math.sin(Math.PI * f) * Math.min(90, E.dist(leg.from.x, leg.from.y, leg.to.x, leg.to.y) * .45);
-        const x = leg.from.x + (leg.to.x - leg.from.x) * f;
-        const y = leg.from.y + (leg.to.y - leg.from.y) * f;
-        drawBall(g, x, y, 72 * (1 - f) + hgt, 1 + Math.sin(Math.PI * f) * .5);
+      ball = { x: leg.from.x + (leg.to.x - leg.from.x) * f, y: leg.from.y + (leg.to.y - leg.from.y) * f, h: 33 + Math.sin(Math.PI * f) * 6 };
+    } else if (leg.blocked) {
+      ball = { x: leg.from.x + 16 * f, y: leg.from.y + 8 * f, h: 3.2 + 50 * (1 - f) + Math.sin(Math.PI * f) * 10 };
+    } else {
+      // Tiro: la pelota sale de la mano cuando los brazos ya están arriba y describe una parábola
+      const fr = Math.max(0, (f - 0.15) / 0.85);
+      if (fr <= 0) ball = handBall(cast.mine[actor]);
+      else {
+        if (!A.release) A.release = handBall(cast.mine[actor]);
+        const h1 = r.scored ? HOOP_H : (leg.board ? 80 : 3.2);
+        ball = {
+          x: A.release.x + (leg.to.x - A.release.x) * fr, y: A.release.y + (leg.to.y - A.release.y) * fr,
+          h: A.release.h + (h1 - A.release.h) * fr + Math.sin(Math.PI * fr) * 40,
+        };
       }
     }
+    if (!(ended && r.scored)) scene.hoop.swish(0);
+    placeBall(ball);
+    if (A && !ended) scene.ball.spin(dt);
 
-    // Nombre del jugador con la pelota
-    if (G.mode === 'plan') {
-      const L = G.myLooks[holder];
-      drawNameTag(g, hp[0], hp[1] - 80, L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`);
+    // Defensores: siguen la pelota con la mirada; al robar o tapar, el más cercano reacciona
+    let stealer = -1, blocker = -1;
+    if (ended && !r.ok) {
+      if (r.reason === 'intercepcion' || r.reason === 'robo') stealer = defIndexNear(r.failPos);
+      if (r.reason === 'tapon') blocker = defIndexNear(leg.from);
     }
+    (lv.defenders || []).forEach((d, k) => {
+      const P = cast.rivals[k], p = defPos[k];
+      const moving = !!(A && !ended && d.path && d.speed);
+      let pose = moving ? 'run' : 'guard';
+      let face = ball;
+      if (moving) face = E.defenderPos(d, gt + 0.05);
+      if (k === stealer) pose = 'steal';
+      if (k === blocker) pose = 'catch';
+      P.setCourtPosition(p.x, p.y);
+      turnTo(P, face.x, face.y, dt);
+      P.setPose(pose);
+      P.update(now);
+    });
+
+    // Cámara: sigue la pelota durante el movimiento; en modo plan ya quedó detrás del poseedor
+    if (A && !ended) scene.setCamera({ mode: 'follow', target: { x: ball.x, y: ball.y, h: ball.h } });
+
+    drawOverlay(now, gt, defPos);
+    placeNameTag(G.mode === 'plan');
+    scene.update(now, dt);
+    scene.render();
   }
 
   // Termina la animación de un movimiento.
@@ -1329,47 +1086,74 @@
       floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!', desviado: '¡Desviada!' }[r.reason] || '¡Fallo!', 'bad');
       try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* nada */ }
       G.mode = 'over';
-      setTimeout(() => { clearFloat(); finishLevel(false, r.reason); }, 1100);
+      setTimeout(() => { clearFloat(); finishLevel(false, r.reason); }, 1500);
       return;
     }
     if (r.scored) {
       floatMsg('¡Canasta!', 'good');
       G.mode = 'over';
-      setTimeout(() => { clearFloat(); finishLevel(true); }, 1000);
+      setTimeout(() => { clearFloat(); finishLevel(true); }, 1500);
       return;
     }
     // Movimiento correcto: el juego espera el siguiente
     G.st = r.state;
     G.anim = null;
     G.mode = 'plan';
+    planCamera(false);
     updateMoveBar();
     if (G.hint) hintText();
     else $('tipbar').textContent = 'Bien. Elige el siguiente movimiento.';
   }
 
-  // ---------------------------------------------------------------- Mover con el dedo
-  function toCourt(e) {
-    const r = cv.getBoundingClientRect();
-    return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+  // ---------------------------------------------------------------- Bucle de dibujo
+  let lastFrame = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.1, Math.max(0.001, (now - lastFrame) / 1000));
+    lastFrame = now;
+    if (current === 'game' && G.st) gameFrame(now, dt);
+    else if (current === 'home' && $('modal').hidden) heroFrame(now, dt);
   }
-  // ¿El dedo está sobre el personaje (pies o cuerpo)?
-  const onChar = (p, q, r) => E.dist(p.x, p.y, q[0], q[1]) < (r || 24) || E.dist(p.x, p.y, q[0], q[1] - 34) < (r || 24) + 6;
 
+  // ---------------------------------------------------------------- Mover con el dedo
+  // Píxeles CSS relativos al canvas.
+  function toPx(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  const pxDist = (p, s) => (s.depth > 0 ? Math.hypot(p.x - s.x, p.y - s.y) : Infinity);
+  // Punto de la cancha bajo el píxel, sobre un plano horizontal a la altura h (para apuntar al aro).
+  const aimRay = new THREE.Raycaster();
+  function screenToCourtAt(px, py, h) {
+    const r = cv.getBoundingClientRect();
+    aimRay.setFromCamera(new THREE.Vector2((px / r.width) * 2 - 1, -(py / r.height) * 2 + 1), scene.camera);
+    const hit = aimRay.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -h), new THREE.Vector3());
+    return hit ? scene.worldToCourt(hit) : null;
+  }
+
+  // Qué movimiento representa el dedo en ese píxel: compañero (torso proyectado), aro o conducción.
   function classify(p) {
     const st = G.st;
     for (let j = 0; j < st.pos.length; j++) {
-      if (j !== st.holder && onChar(p, st.pos[j], 24)) return { kind: 'pass', to: j };
+      if (j !== st.holder && pxDist(p, scene.courtToScreen(st.pos[j][0], st.pos[j][1], 25)) <= 36) return { kind: 'pass', to: j };
     }
-    if (E.dist(p.x, p.y, HOOP.x, HOOP.y) < 70) return { kind: 'shot', x: p.x, y: p.y };
+    if (pxDist(p, scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H)) <= 40) {
+      const aim = screenToCourtAt(p.x, p.y, HOOP_H) || HOOP;
+      return { kind: 'shot', x: aim.x, y: aim.y };
+    }
+    const c = scene.screenToCourt(p.x, p.y);
+    if (!c) return { kind: null };
+    if (E.dist(c.x, c.y, HOOP.x, HOOP.y) < 70) return { kind: 'shot', x: c.x, y: c.y };
     const hp = st.pos[st.holder];
-    if (E.dist(p.x, p.y, hp[0], hp[1]) < E.DRIBBLE_MIN + 6) return { kind: null };
-    return { kind: 'dribble', x: p.x, y: p.y };
+    if (E.dist(c.x, c.y, hp[0], hp[1]) < E.DRIBBLE_MIN + 6) return { kind: null };
+    return { kind: 'dribble', x: c.x, y: c.y };
   }
 
   cv.addEventListener('pointerdown', (e) => {
-    if (G.mode !== 'plan' || !$('modal').hidden) return;
-    const p = toCourt(e);
-    if (!onChar(p, G.st.pos[G.st.holder], 28)) {
+    if (current !== 'game' || G.mode !== 'plan' || !$('modal').hidden) return;
+    const p = toPx(e);
+    const hp = G.st.pos[G.st.holder];
+    if (pxDist(p, scene.courtToScreen(hp[0], hp[1], 25)) > 44) {
       $('tipbar').textContent = 'Empieza desde el jugador que tiene la pelota (el del círculo amarillo).';
       return;
     }
@@ -1379,7 +1163,7 @@
   });
   cv.addEventListener('pointermove', (e) => {
     if (!G.drag) return;
-    G.drag = classify(toCourt(e));
+    G.drag = classify(toPx(e));
   });
   const endDrag = (e) => {
     if (!G.drag) return;
@@ -1401,18 +1185,15 @@
       if (tgt.len < E.DRIBBLE_MIN) { $('tipbar').textContent = 'No hay espacio para conducir hacia ahí.'; return; }
       move = { type: 'dribble', x: d.x, y: d.y };
     }
-    G.anim = { res: E.step(G.level, G.st, move), real0: performance.now(), done: false };
-    G.mode = 'anim';
-    $('tipbar').textContent = '';
+    startMove(E.step(G.level, G.st, move));
   };
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
 
   // ---------------------------------------------------------------- Medidor de fuerza del tiro
-  const stage = $('stage');
   function startCharge(aim) {
     const w = E.shotWindow(G.level, G.st);
-    G.charge = { w, aim, value: 0, dir: 1, pressing: false, last: 0 };
+    G.charge = { w, aim, value: 0, dir: 1, pressing: false, last: 0, timer: 0 };
     G.mode = 'charge';
     $('meter-zone').style.top = (100 - (w.ideal + w.half)) + '%';
     $('meter-zone').style.height = (2 * w.half) + '%';
@@ -1423,28 +1204,33 @@
     $('meter').style.right = Math.max(6, rs.right - rc.right + 6) + 'px';
     $('meter-track').style.height = Math.round(rc.height * 0.5) + 'px';
     $('meter').hidden = false;
+    // La barra lleva su propio reloj para no depender del ritmo de dibujo de la escena
+    G.charge.timer = setInterval(() => updateCharge(performance.now()), 16);
     $('tipbar').textContent = 'Dirección fijada. Mantén presionado para cargar fuerza y suelta dentro de la zona verde.';
   }
-  // La barra sube y baja mientras se mantiene presionado.
+  // La barra sube y baja mientras se mantiene presionado. Un tirón del dispositivo (fotograma
+  // lento) no puede hacer saltar la barra más de 25 ms de recorrido: así sigue siendo controlable.
   function updateCharge(now) {
     const c = G.charge;
     if (!c) return;
     if (c.pressing && c.last) {
-      c.value += c.dir * c.w.speed * (now - c.last) / 1000;
+      c.value += c.dir * c.w.speed * Math.min(25, now - c.last) / 1000;
       if (c.value >= 100) { c.value = 100; c.dir = -1; } else if (c.value <= 0) { c.value = 0; c.dir = 1; }
     }
     c.last = now;
     $('meter-mark').style.top = (100 - c.value) + '%';
   }
+  function stopCharge() {
+    if (G.charge) clearInterval(G.charge.timer);
+    G.charge = null;
+    $('meter').hidden = true;
+  }
   function releaseCharge() {
     const c = G.charge;
     if (!c || !c.pressing) return;
     const power = c.value;
-    G.charge = null;
-    $('meter').hidden = true;
-    G.anim = { res: E.step(G.level, G.st, { type: 'shot', power, aim: c.aim }), real0: performance.now(), done: false };
-    G.mode = 'anim';
-    $('tipbar').textContent = '';
+    stopCharge();
+    startMove(E.step(G.level, G.st, { type: 'shot', power, aim: c.aim }));
   }
   stage.addEventListener('pointerdown', (e) => {
     if (G.mode !== 'charge' || !$('modal').hidden) return;
@@ -1461,53 +1247,11 @@
   stage.addEventListener('pointerup', endCharge);
   stage.addEventListener('pointercancel', endCharge);
 
-  // Acceso de solo lectura para las pruebas automáticas.
+  // Acceso de solo lectura para las pruebas automáticas (píxeles CSS relativos al canvas).
   window.__jm = {
-    get G() { return G; }, get S() { return S; }, E, LEVELS,
-    courtToScreen: (x, y) => { const r = cv.getBoundingClientRect(); return { x: r.left + x / W * r.width, y: r.top + y / H * r.height }; },
+    scene, get G() { return G; }, get S() { return S; }, E, LEVELS,
+    courtToScreen: (x, y, h) => scene.courtToScreen(x, y, h),
   };
-
-  // ---------------------------------------------------------------- Cancha del inicio
-  let heroTeam = null;
-  function drawHero() {
-    const c = $('hero');
-    const r = c.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    const k = Math.min(3, window.devicePixelRatio || 1);
-    c.width = Math.round(r.width * k); c.height = Math.round(r.height * k);
-    heroTeam = S.country ? myTeam(Math.min(S.unlocked, LEVELS.length - 1)) : { name: 'Halcones', colors: ['#B3202A', '#F5F0E6'] };
-    paintHero(performance.now());
-  }
-  function paintHero(now) {
-    const c = $('hero');
-    if (!c.width || !heroTeam) return;
-    const r = c.getBoundingClientRect();
-    const k = c.width / r.width;
-    const g = c.getContext('2d');
-    // La cancha cubre todo el recuadro; se recorta por los lados o por abajo
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = '#D9A866';
-    g.fillRect(0, 0, c.width, c.height);
-    // Encuadre centrado en la jugada; la cancha siempre cubre todo el recuadro
-    const s = Math.max(r.width / W, r.height / H, Math.min(r.width / 270, r.height / 250));
-    const tx = Math.max(r.width - W * s, Math.min(0, r.width / 2 - 180 * s));
-    const ty = Math.max(r.height - H * s, Math.min(0, r.height / 2 - 225 * s));
-    g.setTransform(k * s, 0, 0, k * s, k * tx, k * ty);
-    paintCourt(g, W, H);
-    drawHoop(g, 0);
-    const rival = { name: 'Centellas', colors: ['#F2C230', '#22223B'] };
-    const pts = [[95, 320], [255, 262], [175, 200]];
-    arrowLine(g, { x: 95, y: 320 }, { x: 245, y: 266 }, '#FFFFFF');
-    const chars = pts.map((p, i) => ({ x: p[0], y: p[1], pose: i === 0 ? 'dribble' : i === 2 ? 'catch' : 'idle', look: i === 0 && S.me ? starLook(heroTeam.colors) : lookFor(heroTeam, i), ring: i === 0 ? '#FFC53D' : null }));
-    chars.push({ x: 178, y: 278, pose: 'guard', look: lookFor(rival, 0), rival: true });
-    chars.push({ x: 120, y: 232, pose: 'guard', look: lookFor(rival, 1), rival: true });
-    chars.sort((a, b) => a.y - b.y).forEach((ch) => drawChar(g, ch, now));
-    drawBall(g, 109, 319, 2 + Math.abs(Math.sin(now / 140)) * 17, .9);
-  }
-  (function heroLoop(now) {
-    requestAnimationFrame(heroLoop);
-    if (current === 'home' && $('modal').hidden) paintHero(now);
-  })(performance.now());
 
   // ---------------------------------------------------------------- Botones
   $('btn-play').onclick = () => startLevel(Math.min(S.unlocked, LEVELS.length - 1));
@@ -1515,12 +1259,12 @@
   $('btn-team').onclick = playerModal;
   $('btn-premium-top').onclick = premiumModal;
   $('btn-levels-back').onclick = () => show('home');
-  $('btn-game-back').onclick = () => { closeModal(); show('levels'); };
+  $('btn-game-back').onclick = () => { closeModal(); stopCharge(); show('levels'); };
   $('btn-reset').onclick = askRestart;
   $('btn-hint').onclick = useHint;
 
   // ---------------------------------------------------------------- Arranque
-  requestAnimationFrame(render);
+  requestAnimationFrame(frame);
   const boot = () => {
     show('home');
     if (!S.country) chooseCountry(true, () => createPlayer(true, renderHome));

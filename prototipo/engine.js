@@ -8,16 +8,16 @@
   const COURT = { w: 360, h: 600 };
   const HOOP = { x: 180, y: 70 };
   const BALL_R = 7;           // radio de la pelota
-  const REACH = 22;           // alcance de un defensor para robar
-  const BLOCK_R = 40;         // un defensor a esta distancia del tirador tapa el tiro
+  const REACH = 22;           // alcance de un defensor para robar (un defensor puede traer su propio `reach`)
+  const BLOCK_R = 40;         // un defensor a esta distancia del tirador tapa el tiro (o su propio `block`)
+  const PRESSURE_R = 70;      // a esta distancia (escalada por `block`) el defensor achica la ventana del tiro
   const SPEED = 330;          // velocidad del pase (px/s)
   const DRIBBLE_SPEED = 150;  // velocidad al conducir (px/s)
   const DRIBBLE_MAX = 90;     // distancia máxima de una conducción
   const DRIBBLE_MIN = 18;     // menos que esto no cuenta como conducción
-  const BODY_R = 12;          // radio del cuerpo para obstáculos y bordes
+  const BODY_R = 12;          // radio del cuerpo para los bordes de la cancha
   const SHOT_TIME = 0.8;      // duración del tiro (s)
   const DEFAULT_RANGE = 210;  // distancia máxima de tiro (línea de triple)
-  const WALL_T = 12;          // grosor de los obstáculos
   const MAX_DEPTH = 5;        // movimientos que prueba el buscador de soluciones
 
   const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
@@ -57,21 +57,11 @@
     return { x: d.x, y: d.y };
   }
 
-  // Primer punto (fracción 0..1) del trayecto a-b que choca con un obstáculo, o null.
-  function wallHit(level, ax, ay, bx, by, radius) {
-    const walls = level.walls || [];
-    if (!walls.length) return null;
-    const r = radius == null ? BALL_R : radius;
-    const steps = Math.max(8, Math.ceil(dist(ax, ay, bx, by) / 3));
-    for (let i = 0; i <= steps; i++) {
-      const f = i / steps;
-      const x = ax + (bx - ax) * f, y = ay + (by - ay) * f;
-      for (const w of walls) {
-        if (pointSegDist(x, y, w[0], w[1], w[2], w[3]) < WALL_T / 2 + r) return f;
-      }
-    }
-    return null;
-  }
+  // Alcances de un defensor. Un defensor alto (pívot: `tall: true` en el nivel) suele traer
+  // `reach` y `block` mayores: roba pases que pasan más lejos y tapa tiros desde más distancia.
+  // Los defensores sin esos campos usan los valores base.
+  const defReach = (d) => (d.reach != null ? d.reach : REACH);
+  const defBlock = (d) => (d.block != null ? d.block : BLOCK_R);
 
   // ---------------------------------------------------------------- Estado de una partida
   // El nivel puede indicar quién empieza con la pelota (holder); si no, el jugador 0.
@@ -82,48 +72,44 @@
     return { t: st.t, holder: st.holder, moves: st.moves, pos: st.pos.map((p) => [p[0], p[1]]) };
   }
 
-  // Punto final real de una conducción: como máximo DRIBBLE_MAX, dentro de la cancha
-  // y antes de cualquier obstáculo.
   // Habilidades del jugador estrella (si el nivel las trae); el resto usa los valores base.
   const isStar = (level, i) => level.starIdx != null && level.starIdx === i;
   function rangeFor(level, i) { return (isStar(level, i) && level.starRange) || level.range || DEFAULT_RANGE; }
   function dribbleMaxFor(level, i) { return (isStar(level, i) && level.starDribble) || DRIBBLE_MAX; }
   function passSpeedFor(level, i) { return (isStar(level, i) && level.starPass) || SPEED; }
 
+  // Punto final real de una conducción: como máximo la distancia de conducción del jugador y
+  // dentro de la cancha (sin acercarse a la línea de fondo del aro).
   function dribbleTarget(level, st, x, y) {
     const a = st.pos[st.holder];
     const max = dribbleMaxFor(level, st.holder);
     let dx = x - a[0], dy = y - a[1];
     const len = Math.hypot(dx, dy);
     if (len > max) { dx *= max / len; dy *= max / len; }
-    let bx = Math.max(BODY_R + 6, Math.min(COURT.w - BODY_R - 6, a[0] + dx));
-    let by = Math.max(130, Math.min(COURT.h - BODY_R - 6, a[1] + dy));
-    const hit = wallHit(level, a[0], a[1], bx, by, BODY_R);
-    if (hit !== null) {
-      const f = Math.max(0, hit - 0.04);
-      bx = a[0] + (bx - a[0]) * f;
-      by = a[1] + (by - a[1]) * f;
-    }
+    const bx = Math.max(BODY_R + 6, Math.min(COURT.w - BODY_R - 6, a[0] + dx));
+    const by = Math.max(130, Math.min(COURT.h - BODY_R - 6, a[1] + dy));
     return { x: bx, y: by, len: dist(a[0], a[1], bx, by) };
   }
 
   // Ventana de fuerza del tiro desde la situación actual: punto ideal (0–100), margen a cada
   // lado y velocidad de la barra. Más lejos → más fuerza, menos margen y barra más rápida;
-  // un defensor cerca achica el margen; entrenar Tiro (solo tu jugador) lo agranda y frena la barra.
+  // un defensor cerca achica el margen (un pívot presiona desde más lejos, en proporción a su
+  // `block`); entrenar Tiro (solo tu jugador) lo agranda y frena la barra.
   function shotWindow(level, st) {
     const a = st.pos[st.holder];
     const d = dist(a[0], a[1], HOOP.x, HOOP.y);
     const range = rangeFor(level, st.holder);
     const far = Math.min(1, d / range);
+    // Distancia al defensor más molesto, normalizada a la escala de un defensor común
     let near = Infinity;
     for (const df of level.defenders || []) {
       const p = defenderPos(df, st.t);
-      near = Math.min(near, dist(p.x, p.y, a[0], a[1]));
+      near = Math.min(near, dist(p.x, p.y, a[0], a[1]) * BLOCK_R / defBlock(df));
     }
     const skill = isStar(level, st.holder) ? (level.starShot || 0) : 0;
-    const pressure = near < 70;
+    const pressure = near < PRESSURE_R;
     let half = 11 - 5 * far + 2.5 * skill;
-    if (pressure) half -= 3 * (1 - near / 70);
+    if (pressure) half -= 3 * (1 - near / PRESSURE_R);
     return {
       ideal: 38 + 50 * far,
       half: Math.max(4, half),
@@ -135,7 +121,8 @@
   }
 
   // ¿Algún defensor alcanza la pelota mientras viaja de a a b entre t0 y t0+dur?
-  function checkSteal(level, a, b, t0, dur, reach) {
+  // Cada defensor roba dentro de su `reach` (más el radio de la pelota).
+  function checkSteal(level, a, b, t0, dur) {
     const defs = level.defenders || [];
     const dt = 1 / 240;
     for (let tt = 0; tt <= dur + 1e-9; tt += dt) {
@@ -143,7 +130,7 @@
       const x = a.x + (b.x - a.x) * f, y = a.y + (b.y - a.y) * f;
       for (const d of defs) {
         const p = defenderPos(d, t0 + tt);
-        if (dist(p.x, p.y, x, y) < reach) return { tt, pos: { x, y } };
+        if (dist(p.x, p.y, x, y) < defReach(d) + BALL_R) return { tt, pos: { x, y }, who: d };
       }
     }
     return null;
@@ -162,7 +149,7 @@
     if (move.type === 'shot') {
       for (const d of defs) {
         const p = defenderPos(d, t0);
-        if (dist(p.x, p.y, a.x, a.y) < BLOCK_R) {
+        if (dist(p.x, p.y, a.x, a.y) < defBlock(d)) {
           return { ok: false, reason: 'tapon', leg: { type: 'shot', from: a, to: a, t0, t1: t0 + 0.4, blocked: true }, failPos: a };
         }
       }
@@ -207,15 +194,9 @@
       const bp = st.pos[move.to];
       const b = { x: bp[0], y: bp[1] };
       const dur = dist(a.x, a.y, b.x, b.y) / passSpeedFor(level, st.holder);
-      const hit = wallHit(level, a.x, a.y, b.x, b.y);
-      const limit = hit === null ? 1 : hit;
-      const lb = { x: a.x + (b.x - a.x) * limit, y: a.y + (b.y - a.y) * limit };
-      const steal = checkSteal(level, a, lb, t0, dur * limit, REACH + BALL_R);
+      const steal = checkSteal(level, a, b, t0, dur);
       if (steal) {
         return { ok: false, reason: 'intercepcion', leg: { type: 'pass', from: a, to: steal.pos, t0, t1: t0 + steal.tt, who: st.holder }, failPos: steal.pos };
-      }
-      if (hit !== null) {
-        return { ok: false, reason: 'obstaculo', leg: { type: 'pass', from: a, to: lb, t0, t1: t0 + dur * hit, who: st.holder }, failPos: lb };
       }
       next.t = t0 + dur;
       next.holder = move.to;
@@ -227,7 +208,7 @@
     const tgt = dribbleTarget(level, st, move.x, move.y);
     const b = { x: tgt.x, y: tgt.y };
     const dur = tgt.len / DRIBBLE_SPEED;
-    const steal = checkSteal(level, a, b, t0, dur, REACH + BALL_R);
+    const steal = checkSteal(level, a, b, t0, dur);
     if (steal) {
       return { ok: false, reason: 'robo', leg: { type: 'dribble', from: a, to: steal.pos, t0, t1: t0 + steal.tt, who: st.holder }, failPos: steal.pos };
     }
@@ -281,9 +262,9 @@
   }
 
   const api = {
-    COURT, HOOP, BALL_R, REACH, BLOCK_R, SPEED, DRIBBLE_SPEED, DRIBBLE_MAX, DRIBBLE_MIN, BODY_R,
-    SHOT_TIME, DEFAULT_RANGE, WALL_T,
-    dist, pointSegDist, defenderPos, wallHit, rangeFor, dribbleMaxFor, passSpeedFor,
+    COURT, HOOP, BALL_R, REACH, BLOCK_R, PRESSURE_R, SPEED, DRIBBLE_SPEED, DRIBBLE_MAX, DRIBBLE_MIN, BODY_R,
+    SHOT_TIME, DEFAULT_RANGE,
+    dist, pointSegDist, defenderPos, defReach, defBlock, rangeFor, dribbleMaxFor, passSpeedFor,
     initState, cloneState, dribbleTarget, shotWindow, step, simulate, solve, stars,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

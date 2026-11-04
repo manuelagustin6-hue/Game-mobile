@@ -144,15 +144,46 @@
     font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 6px;
   }
 
-  /* Partida */
-  .game-top { display: flex; align-items: center; gap: 8px; }
-  .lvl-label { font-family: var(--display); font-weight: 700; font-size: 17px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.05; min-width: 0; }
-  .lvl-label small { display: block; font-family: var(--body); font-weight: 500; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .stage {
-    flex: 1; min-height: 0; position: relative; touch-action: none;
-    border-radius: 16px; overflow: hidden; background: #06080f;
-    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  /* Partida: pantalla completa. El 3D ocupa todo el teléfono de borde a borde (también bajo el
+     margen lateral del body) y la interfaz va superpuesta en dos franjas translúcidas. */
+  #scr-game { position: fixed; inset: 0; z-index: 5; display: block; padding: 0; gap: 0; background: #06080f; }
+  .stage { position: absolute; inset: 0; touch-action: none; overflow: hidden; background: #06080f; }
+  .gbar { position: absolute; left: 0; right: 0; z-index: 2; display: flex; pointer-events: none; }
+  .gbar button { pointer-events: auto; }
+  .gbar.top {
+    top: 0; align-items: center; gap: 8px;
+    padding: max(8px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 16px max(12px, env(safe-area-inset-left, 0px));
+    background: linear-gradient(to bottom, rgba(6,8,15,.86) 0%, rgba(6,8,15,.5) 60%, rgba(6,8,15,0) 100%);
   }
+  .gbar.bottom {
+    bottom: 0; flex-direction: column; gap: 6px;
+    padding: 22px max(12px, env(safe-area-inset-right, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+    background: linear-gradient(to top, rgba(6,8,15,.9) 0%, rgba(6,8,15,.62) 65%, rgba(6,8,15,0) 100%);
+  }
+  .gbar .icon-btn { width: 36px; height: 36px; border-radius: 11px; font-size: 17px; background: rgba(23,42,75,.78); border-color: rgba(255,255,255,.14); }
+  .gbar .pill { padding: 4px 10px; font-size: 15px; background: rgba(23,42,75,.78); border-color: rgba(255,255,255,.14); }
+  .lvl-label { font-family: var(--display); font-weight: 700; font-size: 15px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.05; min-width: 0; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+  .lvl-label small { display: block; font-family: var(--body); font-weight: 500; font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .movebar {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    font-family: var(--display); font-weight: 600; font-size: 15px; text-transform: uppercase; letter-spacing: .03em;
+    font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px rgba(0,0,0,.7);
+  }
+  .movebar b { font-size: 21px; font-weight: 800; color: var(--paper); }
+  .movebar .goal { color: var(--muted); font-size: 14px; }
+  .tipbar {
+    font-size: 13px; line-height: 1.3; height: 2.6em; overflow: hidden; color: #DCE4F0; text-align: center;
+    text-shadow: 0 1px 2px rgba(0,0,0,.8); padding-inline: 4px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .gbar .controls { display: flex; align-items: center; gap: 8px; }
+  .gbar .controls .spacer { flex: 1; }
+  .gbar .btn.small { font-size: 15px; padding: 8px 15px; border-radius: 999px; box-shadow: 0 3px 0 #0A1324; }
+  .gbar .btn.gold.small { box-shadow: 0 3px 0 #B9860F; }
+  .gbar .btn.alt.small { background: rgba(23,42,75,.85); }
+  .icon-btn.round { width: 40px; height: 40px; border-radius: 50%; color: var(--paper); transition: opacity .2s ease; }
+  .icon-btn.round svg { width: 22px; height: 22px; display: block; }
+  .icon-btn.round.off { opacity: .45; }
   .nametag {
     position: absolute; transform: translate(-50%, -100%);
     background: rgba(14,26,49,.88); color: var(--paper); border: 1px solid rgba(255,255,255,.12);
@@ -169,9 +200,8 @@
   .movebar .goal { color: var(--muted); font-size: 15px; }
   .howto { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.35; }
   .howto b { color: var(--gold); font-weight: 600; }
-  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .meter {
-    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    position: absolute; right: max(8px, env(safe-area-inset-right, 0px)); top: 46%; transform: translateY(-50%);
     width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
     pointer-events: none; animation: rise .2s ease both;
   }
@@ -352,15 +382,8 @@
     <div class="scroll" id="levels-list"></div>
   </section>
 
-  <!-- Partida -->
+  <!-- Partida: el 3D de borde a borde y las dos franjas de interfaz superpuestas -->
   <section class="screen" id="scr-game" hidden>
-    <div class="game-top">
-      <button class="icon-btn" id="btn-game-back" aria-label="Volver a los niveles">←</button>
-      <div class="lvl-label" id="game-label"></div>
-      <span class="spacer" style="flex:1"></span>
-      <span class="pill" id="game-lives"></span>
-      <span class="pill" id="game-coins"></span>
-    </div>
     <div class="stage" id="stage">
       <canvas id="court"></canvas>
       <div class="nametag" id="nametag" hidden></div>
@@ -370,11 +393,24 @@
         <div class="meter-track" id="meter-track"><div class="meter-zone" id="meter-zone"></div><div class="meter-mark" id="meter-mark"></div></div>
       </div>
     </div>
-    <div class="movebar" id="movebar"></div>
-    <div class="tipbar" id="tipbar"></div>
-    <div class="controls">
-      <button class="btn alt small" id="btn-reset">Reiniciar</button>
-      <button class="btn gold small" id="btn-hint">Ayuda · 30</button>
+    <div class="gbar top" id="game-top">
+      <button class="icon-btn" id="btn-game-back" aria-label="Volver a los niveles">←</button>
+      <div class="lvl-label" id="game-label"></div>
+      <span class="spacer" style="flex:1"></span>
+      <span class="pill" id="game-lives"></span>
+      <span class="pill" id="game-coins"></span>
+    </div>
+    <div class="gbar bottom" id="game-bottom">
+      <div class="movebar" id="movebar"></div>
+      <div class="tipbar" id="tipbar"></div>
+      <div class="controls">
+        <button class="btn alt small" id="btn-reset">Reiniciar</button>
+        <button class="btn gold small" id="btn-hint">Ayuda · 30</button>
+        <span class="spacer"></span>
+        <button class="icon-btn round off" id="btn-recenter" aria-label="Recentrar cámara" title="Recentrar cámara">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4.6h4.6"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+        </button>
+      </div>
     </div>
   </section>
 </div>

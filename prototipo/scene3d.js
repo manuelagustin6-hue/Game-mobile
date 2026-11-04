@@ -10,7 +10,6 @@
   const COURT = { w: 360, h: 600 };        // media cancha jugable (unidades de cancha)
   const HOOP = { x: 180, y: 70 };          // aro en coordenadas de cancha
   const RANGE = 210;                       // línea de triple = alcance de tiro
-  const WALL_T = 12;                       // grosor de los obstáculos
   const HOOP_H = 73;                       // 3,05 m
   const RIM_R = 5.4;                       // radio del aro
   const BOARD_W = 43, BOARD_H = 25;        // tablero 1,8 × 1,05 m
@@ -233,7 +232,6 @@
 
     const world = new T.Group(); scene.add(world);     // estadio fijo
     const dyn = new T.Group(); scene.add(dyn);         // jugadores (add/remove)
-    const wallsGroup = new T.Group(); scene.add(wallsGroup);
     const overlayGroup = new T.Group(); scene.add(overlayGroup);
 
     // ---------------------------------------------------------------- Luces
@@ -638,30 +636,6 @@
       spin(dt) { ballMesh.rotation.x -= dt * 7; ballMesh.rotation.z += dt * 2.5; },
     };
 
-    // ---------------------------------------------------------------- Obstáculos
-    const wallMat = track(new T.MeshStandardMaterial({ color: 0x22335a, roughness: 0.55 }));
-    const stripeTex = track(canvasTex(64, 16, (g) => { g.clearRect(0, 0, 64, 16); g.fillStyle = '#FFC53D'; g.fillRect(0, 5, 32, 6); }, { repeat: true }));
-    const stripeMat = track(new T.MeshBasicMaterial({ map: stripeTex, transparent: true, toneMapped: false, polygonOffset: true, polygonOffsetFactor: -1 }));
-    function setLevel(level) {
-      while (wallsGroup.children.length) { const c = wallsGroup.children.pop(); c.geometry.dispose(); if (c.material.map && c.material !== stripeMat) c.material.map.dispose(); }
-      const boxes = [], stripes = [];
-      for (const w of (level && level.walls) || []) {
-        const a = courtToWorld(w[0], w[1]), b = courtToWorld(w[2], w[3]);
-        const len = a.distanceTo(b), ang = Math.atan2(-(b.z - a.z), b.x - a.x);
-        const cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
-        boxes.push(placed(new T.BoxGeometry(len + WALL_T, 10, WALL_T), cx, 5, cz, ang));
-        boxes.push(placed(new T.CylinderGeometry(WALL_T / 2, WALL_T / 2, 10, 12), a.x, 5, a.z));
-        boxes.push(placed(new T.CylinderGeometry(WALL_T / 2, WALL_T / 2, 10, 12), b.x, 5, b.z));
-        const pg = new T.PlaneGeometry(len, WALL_T - 4);
-        const uv = pg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * len / 12);
-        const m = M4().compose(new T.Vector3(cx, 10.06, cz), new T.Quaternion().setFromEuler(new T.Euler(-Math.PI / 2, 0, ang, 'YXZ')), new T.Vector3(1, 1, 1));
-        stripes.push({ geo: pg, matrix: m });
-      }
-      if (!boxes.length) return;
-      const wm = new T.Mesh(mergeGeoms(boxes), wallMat); wm.castShadow = true; wm.receiveShadow = true; wallsGroup.add(wm);
-      wallsGroup.add(new T.Mesh(mergeGeoms(stripes), stripeMat));
-    }
-
     // ---------------------------------------------------------------- Overlay (dibujos sobre el piso)
     const OV_Y = 0.6;
     function ovMaterial(color, alpha) {
@@ -771,24 +745,50 @@
     };
 
     // ---------------------------------------------------------------- Cámara
+    // Giro controlado por el usuario ("órbita"): yaw acotado a ±90° (180° de recorrido) y pitch a
+    // −8°..+25°. Se aplica sobre el encuadre 'holder' y se conserva en 'follow' para que la vista no
+    // salte durante un movimiento: la cámara gira alrededor del poseedor y el encuadre de todos los
+    // puntos se vuelve a resolver con el giro aplicado. La transición es una amortiguación exponencial.
+    const ORBIT = { yawMax: Math.PI / 2, pitchMin: -8 * Math.PI / 180, pitchMax: 25 * Math.PI / 180, damp: 9 };
+    const orbit = { yaw: 0, pitch: 0, goalYaw: 0, goalPitch: 0, settled: true };
+    const UP = new T.Vector3(0, 1, 0);
     const cam = {
       mode: 'holder', pos: camera.position.clone(), look: new T.Vector3(0, 20, -230),
       from: null, to: null, t0: 0, dur: 0.6, goal: null, lastD: 180, target: null, points: [], holder: null, cineT: 0,
+      dirty: false,                        // hay que volver a resolver el encuadre (giro, tamaño o franjas)
     };
+    // Franjas de la interfaz superpuestas al canvas (px CSS): el encuadre deja esos bordes libres.
+    const insets = { top: 0, bottom: 0, left: 0, right: 0 };
+    function setInsets(o) {
+      o = o || {};
+      let changed = false;
+      for (const k of ['top', 'bottom', 'left', 'right']) {
+        const v = Math.max(0, o[k] || 0);
+        if (v !== insets[k]) { insets[k] = v; changed = true; }
+      }
+      if (changed) cam.dirty = true;
+    }
     const _v = new T.Vector3(), _tmpCam = new T.PerspectiveCamera(FOV, 1, 2, 3200);
     const clampPos = (p) => { p.x = Math.max(-BOWL.x + 14, Math.min(BOWL.x - 14, p.x)); p.z = Math.max(BOWL.z0 + 16, Math.min(BOWL.z1 - 16, p.z)); p.y = Math.max(28, Math.min(ROOF_Y - 90, p.y)); return p; };
     function forwardFrom(yaw, pitch) {                  // yaw 0 → mira a -z; pitch > 0 → hacia abajo
       return new T.Vector3(Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
     }
-    // Encuadre tipo Score! Hero: detrás y por encima del poseedor, mirando al aro, con todos los puntos adentro.
+    // Encuadre tipo Score! Hero: detrás y por encima del poseedor (girado por la órbita del usuario),
+    // mirando al aro, con todos los puntos adentro de la zona libre de interfaz.
     function solveFraming(holder, points, opt) {
       opt = opt || {};
+      const oYaw = opt.yaw != null ? opt.yaw : orbit.yaw, oPitch = opt.pitch != null ? opt.pitch : orbit.pitch;
       const H = courtToWorld(holder.x, holder.y, 0);
       const hoopW = courtToWorld(HOOP.x, HOOP.y, 0);
       const dir = new T.Vector3(hoopW.x - H.x, 0, hoopW.z - H.z);
       const dh = dir.length();
       if (dh < 1) dir.set(0, 0, -1); else dir.divideScalar(dh);
       if (dh < 150) dir.lerp(new T.Vector3(0, 0, -1), (150 - dh) / 150).normalize();
+      // "atrás" del poseedor, girado por el yaw del usuario (yaw > 0: la cámara pasa a su derecha)
+      const back = dir.clone().negate();
+      if (oYaw) back.applyAxisAngle(UP, oYaw);
+      // elevación: tan(29° + pitch del usuario)
+      const elev = Math.tan(Math.max(0.12, Math.min(1.25, Math.atan(CAM_ELEV) + oPitch)));
       // muestras a encuadrar: pies y cabeza de cada punto, tablero completo, el poseedor
       const S = [];
       const addP = (x, y, h0, h1) => { S.push(courtToWorld(x, y, h0)); S.push(courtToWorld(x, y, h1)); };
@@ -796,35 +796,44 @@
       for (const p of points || []) { const px = p.x != null ? p.x : p[0], py = p.y != null ? p.y : p[1]; addP(px, py, 0, (p.h || 0) + 52); }
       addP(HOOP.x - BOARD_W / 2, HOOP.y - 9, 0, HOOP_H + 24); addP(HOOP.x + BOARD_W / 2, HOOP.y - 9, 0, HOOP_H + 24);
       addP(HOOP.x, HOOP.y, 0, HOOP_H);
+      const centroid = new T.Vector3(); for (const s of S) centroid.add(s); centroid.divideScalar(S.length);
       const aspect = cssW / cssH;
       _tmpCam.aspect = aspect; _tmpCam.fov = FOV; _tmpCam.updateProjectionMatrix();
       const tanV = Math.tan((FOV / 2) * Math.PI / 180), tanH = tanV * aspect;
-      const mx = 0.08, mTop = 0.1, mBot = 0.09;
-      let D = opt.D0 || 150;
-      const minPitch = 0.33, maxPitch = 1.05;
-      let pos, yaw, pitch, ok = false, bb;
-      for (let it = 0; it < 40 && !ok; it++) {
-        pos = H.clone().addScaledVector(dir, -D); pos.y = Math.min(26 + D * CAM_ELEV, 200 + D * 0.08);
+      // zona útil en NDC: fuera de las franjas de interfaz, con margen
+      const xLo = -1 + 2 * insets.left / cssW + 0.13, xHi = 1 - 2 * insets.right / cssW - 0.13;   // margen lateral: el cuerpo del poseedor no roza el borde
+      const yLo = -1 + 2 * insets.bottom / cssH + (insets.bottom ? 0.035 : 0.09);
+      const yHi = 1 - 2 * insets.top / cssH - (insets.top ? 0.04 : 0.1);
+      const minPitch = Math.max(0.1, 0.33 + oPitch), maxPitch = Math.min(1.3, 1.05 + oPitch);
+      // Evalúa el encuadre a distancia D: posición, orientación hacia las muestras y si entran todas.
+      function frameAt(D) {
+        const pos = H.clone().addScaledVector(back, D);
+        pos.y = Math.min(26 + D * elev, (200 + D * 0.08) * (elev / CAM_ELEV));
         clampPos(pos);
-        // orientación inicial: hacia el centro de las muestras
-        const c = new T.Vector3(); for (const s of S) c.add(s); c.divideScalar(S.length);
-        const f = c.clone().sub(pos).normalize();
-        yaw = Math.atan2(f.x, -f.z); pitch = Math.asin(-f.y);
+        const f = centroid.clone().sub(pos).normalize();
+        let lyaw = Math.atan2(f.x, -f.z), lpitch = Math.asin(-f.y), bb;
         for (let k = 0; k < 6; k++) {
-          _tmpCam.position.copy(pos); _tmpCam.lookAt(pos.clone().add(forwardFrom(yaw, pitch))); _tmpCam.updateMatrixWorld();
+          _tmpCam.position.copy(pos); _tmpCam.lookAt(pos.clone().add(forwardFrom(lyaw, lpitch))); _tmpCam.updateMatrixWorld();
           bb = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9 };
           for (const s of S) { _v.copy(s).project(_tmpCam); bb.x0 = Math.min(bb.x0, _v.x); bb.x1 = Math.max(bb.x1, _v.x); bb.y0 = Math.min(bb.y0, _v.y); bb.y1 = Math.max(bb.y1, _v.y); }
-          yaw += Math.atan(((bb.x0 + bb.x1) / 2) * tanH);
+          lyaw += Math.atan(((bb.x0 + bb.x1) / 2 - (xLo + xHi) / 2) * tanH);
           const hgt = bb.y1 - bb.y0;
-          // el poseedor queda abajo con margen; si el conjunto es más alto que la pantalla, se centra
-          const targetBottom = hgt <= 2 - mTop - mBot ? -1 + mBot : -(hgt / 2);
-          pitch += Math.atan((targetBottom - bb.y0) * tanV);
-          pitch = Math.max(minPitch, Math.min(maxPitch, pitch));
+          // el poseedor queda abajo con margen; si el conjunto es más alto que la zona útil, se centra
+          const targetBottom = hgt <= yHi - yLo ? yLo : (yLo + yHi) / 2 - hgt / 2;
+          lpitch += Math.atan((targetBottom - bb.y0) * tanV);
+          lpitch = Math.max(minPitch, Math.min(maxPitch, lpitch));
         }
-        ok = bb.x0 >= -1 + mx && bb.x1 <= 1 - mx && bb.y0 >= -1 + mBot - 0.01 && bb.y1 <= 1 - mTop;
-        if (!ok) D *= 1.07;
+        const ok = bb.x0 >= xLo && bb.x1 <= xHi && bb.y0 >= yLo - 0.01 && bb.y1 <= yHi;
+        return { pos, look: pos.clone().add(forwardFrom(lyaw, lpitch).multiplyScalar(200)), D, ok };
       }
-      return { pos, look: pos.clone().add(forwardFrom(yaw, pitch).multiplyScalar(200)), D };
+      let D = opt.D0 || 150, r = frameAt(D), grown = 0;
+      for (let it = 0; it < 40 && !r.ok; it++) { D *= 1.07; r = frameAt(D); grown++; }
+      // afina la distancia entre la última que no alcanzaba y la que alcanza: así no "salta" al girar
+      if (r.ok && grown) {
+        let lo = D / 1.07, hi = D;
+        for (let k = 0; k < 5; k++) { const mid = (lo + hi) / 2, m = frameAt(mid); if (m.ok) { hi = mid; r = m; } else lo = mid; }
+      }
+      return { pos: r.pos, look: r.look, D: r.D };
     }
     function setCamera(o) {
       o = o || {};
@@ -843,7 +852,7 @@
         goal = cinematicPose(cam.cineT);
       }
       if (!goal) return;
-      cam.goal = goal;
+      cam.goal = goal; cam.dirty = false;
       if (o.instant) {
         cam.pos.copy(goal.pos); cam.look.copy(goal.look); cam.from = null;
         applyCamera();
@@ -851,6 +860,33 @@
         cam.from = { pos: cam.pos.clone(), look: cam.look.clone() };
         cam.to = goal; cam.t0 = now; cam.dur = 0.6;
       }
+    }
+    // Órbita del usuario: yaw y pitch en radianes (se acotan); instant salta sin animar.
+    function setOrbit(o) {
+      o = o || {};
+      if (o.yaw != null) orbit.goalYaw = Math.max(-ORBIT.yawMax, Math.min(ORBIT.yawMax, o.yaw));
+      if (o.pitch != null) orbit.goalPitch = Math.max(ORBIT.pitchMin, Math.min(ORBIT.pitchMax, o.pitch));
+      if (o.instant) {
+        orbit.yaw = orbit.goalYaw; orbit.pitch = orbit.goalPitch;
+        if (cam.mode === 'holder' && cam.holder) {
+          cam.goal = solveFraming(cam.holder, cam.points); cam.lastD = cam.goal.D;
+          cam.pos.copy(cam.goal.pos); cam.look.copy(cam.goal.look); cam.from = null;
+          applyCamera();
+        }
+      }
+      orbit.settled = false;
+      cam.dirty = true;
+    }
+    const getOrbit = () => ({ yaw: orbit.yaw, pitch: orbit.pitch, goalYaw: orbit.goalYaw, goalPitch: orbit.goalPitch, settled: orbit.settled, yawMax: ORBIT.yawMax, pitchMin: ORBIT.pitchMin, pitchMax: ORBIT.pitchMax });
+    const resetOrbit = () => setOrbit({ yaw: 0, pitch: 0 });
+    // Acerca yaw/pitch a su objetivo con amortiguación exponencial; devuelve si cambió este fotograma.
+    function stepOrbit(dt) {
+      const dy = orbit.goalYaw - orbit.yaw, dp = orbit.goalPitch - orbit.pitch;
+      if (Math.abs(dy) < 1e-9 && Math.abs(dp) < 1e-9) return false;
+      const k = 1 - Math.exp(-dt * ORBIT.damp);
+      orbit.yaw += dy * k; orbit.pitch += dp * k;
+      if (Math.abs(orbit.goalYaw - orbit.yaw) < 2e-4 && Math.abs(orbit.goalPitch - orbit.pitch) < 2e-4) { orbit.yaw = orbit.goalYaw; orbit.pitch = orbit.goalPitch; }
+      return true;
     }
     function cinematicPose(t) {
       const a = Math.sin(t * 0.22) * 0.75;
@@ -865,14 +901,25 @@
     }
     function updateCamera(now, dt) {
       cam.now = now;
+      const turning = stepOrbit(dt);
       if (cam.mode === 'holder') {
+        if (cam.holder && (turning || cam.dirty)) {
+          cam.goal = solveFraming(cam.holder, cam.points); cam.lastD = cam.goal.D; cam.dirty = false;
+          if (cam.from) cam.to = cam.goal;
+        }
         if (cam.from && cam.to) {
           let k = Math.min(1, (now - cam.t0) / cam.dur);
           k = 1 - Math.pow(1 - k, 3);
           cam.pos.lerpVectors(cam.from.pos, cam.to.pos, k);
           cam.look.lerpVectors(cam.from.look, cam.to.look, k);
           if (k >= 1) cam.from = null;
+        } else if (cam.goal) {
+          // sin transición programada: la cámara persigue el encuadre con amortiguación exponencial
+          const k = 1 - Math.exp(-dt * 10);
+          cam.pos.lerp(cam.goal.pos, k); cam.look.lerp(cam.goal.look, k);
+          if (cam.pos.distanceToSquared(cam.goal.pos) < 0.01 && cam.look.distanceToSquared(cam.goal.look) < 0.01) { cam.pos.copy(cam.goal.pos); cam.look.copy(cam.goal.look); }
         }
+        orbit.settled = !turning && !cam.from && (!cam.goal || cam.pos.equals(cam.goal.pos));
       } else if (cam.mode === 'follow' || cam.mode === 'cinematic') {
         if (cam.mode === 'cinematic') { cam.cineT += dt; cam.goal = cinematicPose(cam.cineT); }
         else if (cam.target) cam.goal = solveFraming(cam.target, cam.points, { D0: cam.lastD * 0.9 });
@@ -880,6 +927,7 @@
           const k = 1 - Math.exp(-dt * (cam.mode === 'cinematic' ? 2.5 : 5));
           cam.pos.lerp(cam.goal.pos, k); cam.look.lerp(cam.goal.look, k);
         }
+        orbit.settled = !turning;
       }
       applyCamera();
       cullFarCrowd();
@@ -907,7 +955,7 @@
     function cullFarCrowd() {
       const fwd = camera.getWorldDirection(_v);
       let n = SEAT_SETS[1].length;
-      if (fwd.z < 0.25) {
+      if (fwd.z < -0.6) {
         const lim = camera.position.z + 140;
         let lo = 0, hi = n;
         while (lo < hi) { const mid = (lo + hi) >> 1; if (FAR_Z[mid] < lim) lo = mid + 1; else hi = mid; }
@@ -934,6 +982,7 @@
       renderer.setPixelRatio(Math.min(2, dpr || 1));
       renderer.setSize(w, h, false);
       camera.aspect = w / h; camera.updateProjectionMatrix();
+      cam.dirty = true;
     }
     let lastMs = 0, lastInfo = { calls: 0, triangles: 0 };
     function render() {
@@ -955,7 +1004,7 @@
       colorCrowd(); buildPennants();
     }
     function dispose() {
-      overlay.clear(); setLevel(null);
+      overlay.clear();
       for (const d of disposables) if (d && d.dispose) d.dispose();
       if (pennants) pennants.geometry.dispose();
       pennantMat.dispose();
@@ -965,7 +1014,7 @@
     const api = {
       renderer, scene, camera, ball, overlay,
       hoop: { swish(t) { hoopNear.swish = t; }, group: hoopNear.group },
-      resize, setLevel, setCamera, update, render, setQuality, setTeams, dispose,
+      resize, setCamera, setOrbit, getOrbit, resetOrbit, setInsets, update, render, setQuality, setTeams, dispose,
       add: (o) => dyn.add(o), remove: (o) => dyn.remove(o),
       courtToWorld: (x, y, h) => courtToWorld(x, y, h),
       worldToCourt, screenToCourt, courtToScreen,

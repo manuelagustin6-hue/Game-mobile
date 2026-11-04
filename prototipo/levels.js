@@ -3,7 +3,8 @@
 // players: tus jugadores; `holder` indica cuál empieza con la pelota (0 si falta) y `star` cuál es
 // el jugador del usuario (0 si falta).
 // defenders: {x, y} fijos, o con path (puntos de su ruta, ida y vuelta) y speed (px/s).
-// walls: obstáculos [x1, y1, x2, y2].
+//   Un defensor con tall: true es un pívot: más alto y fornido, con reach (radio en el que roba
+//   pases y conducciones; base 22) y block (distancia a la que tapa un tiro; base 40) mayores.
 // stage: 'club' (partido con tu club) o 'seleccion' (partido con tu selección).
 (function (root) {
   'use strict';
@@ -60,11 +61,10 @@
       ],
     },
     {
-      name: 'Obstáculos', stage: 'club',
-      tip: 'La pelota no atraviesa los obstáculos.',
+      name: 'El pívot', stage: 'club',
+      tip: 'El pívot es más alto: roba los pases que pasan cerca de él, aunque no esté en la línea. Pasa lejos de él.',
       players: [[180, 540], [60, 360], [300, 360], [180, 230]],
-      defenders: [{ x: 180, y: 420 }],
-      walls: [[140, 300, 220, 300], [60, 440, 130, 440]],
+      defenders: [{ x: 180, y: 420 }, { x: 90, y: 470, tall: true, reach: 36, block: 50 }],
     },
     {
       name: 'Presión', stage: 'club',
@@ -79,14 +79,14 @@
     },
     {
       name: 'Zona', stage: 'club',
-      tip: 'Hay un pase largo que nadie cubre. Encuéntralo.',
+      tip: 'El pívot cierra la banda derecha con sus brazos largos. Hay un pase largo que nadie cubre: encuéntralo.',
       players: [[40, 560], [320, 540], [320, 330], [50, 330], [180, 200]],
       defenders: [
         { x: 180, y: 545 },
         { x: 180, y: 430, path: [[180, 280]], speed: 120 },
         { x: 210, y: 160 },
+        { x: 290, y: 400, tall: true, reach: 36, block: 50 },
       ],
-      walls: [[230, 400, 330, 400]],
     },
     {
       name: 'Contraataque', stage: 'club',
@@ -100,7 +100,7 @@
     },
     {
       name: 'Final con la selección', stage: 'seleccion',
-      tip: 'La final. Defensores en movimiento, obstáculos y poco espacio. El último tiro es tuyo.',
+      tip: 'La final. Defensores en movimiento y un pívot plantado frente a tu jugador. El último tiro es tuyo.',
       players: [[180, 240], [60, 570], [300, 560], [300, 380], [60, 380]],
       holder: 1,
       defenders: [
@@ -108,8 +108,8 @@
         { x: 40, y: 470, path: [[320, 470]], speed: 180 },
         { x: 180, y: 300, path: [[100, 300], [260, 300]], speed: 140 },
         { x: 215, y: 205 },
+        { x: 180, y: 350, tall: true, reach: 36, block: 50 },
       ],
-      walls: [[140, 380, 220, 380]],
     },
   ];
 

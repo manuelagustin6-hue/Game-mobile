@@ -475,6 +475,7 @@
     idx: 0, level: null, solution: null, mode: 'plan',
     st: null, anim: null, drag: null, charge: null, hint: false, hintCache: null,
     mine: null, rival: null, myLooks: [], rivalLooks: [],
+    orbit: null,                 // gesto en curso que gira la cámara (arrastre fuera del poseedor)
   };
 
   function startLevel(i) {
@@ -495,8 +496,17 @@
       if (lk.num === S.me.num) lk.num = (lk.num + 20) % 100;
       return lk;
     });
-    G.rivalLooks = (lv.defenders || []).map((_, k) => lookFor(G.rival, k));
+    // Los pívots (tall) se ven más altos y fornidos que el resto del equipo rival; cuando hay uno,
+    // los demás defensores no son fornidos ni tan altos, para que se lo distinga a simple vista
+    const hasTall = (lv.defenders || []).some((d) => d.tall);
+    G.rivalLooks = (lv.defenders || []).map((d, k) => {
+      const lk = lookFor(G.rival, k);
+      if (d.tall) { lk.body = 'fornido'; lk.h = 1.08; }
+      else if (hasTall) { if (lk.body === 'fornido') lk.body = 'atletico'; lk.h = Math.min(lk.h, 1.01); }
+      return lk;
+    });
     G.hint = false;
+    scene.setOrbit({ yaw: 0, pitch: 0, instant: true });
     buildCast();
     resetPlay();
     show('game');
@@ -506,7 +516,7 @@
 
   function resetPlay() {
     G.st = E.initState(G.level);
-    G.anim = null; G.drag = null; G.hintCache = null;
+    G.anim = null; G.drag = null; G.orbit = null; G.hintCache = null;
     stopCharge();
     G.mode = 'plan';
     clearFloat();
@@ -526,6 +536,7 @@
 
   function levelCard() {
     const lv = G.level, min = G.solution.minMoves;
+    const defs = lv.defenders || [], talls = defs.filter((d) => d.tall).length;
     modal(`
       <span class="eyebrow">Temporada ${seasonOf(G.idx)} · Nivel ${G.idx + 1}${lv.stage === 'seleccion' ? ' · Selección' : ''}</span>
       <h2>${lv.name}</h2>
@@ -540,7 +551,7 @@
         : `La pelota la tiene <b>#${G.myLooks[lv.holder || 0].num} ${esc(G.myLooks[lv.holder || 0].name)}</b>. Tu jugador <b style="color:var(--gold)">★ ${esc(S.me.name)}</b> espera libre: búscalo para definir.`}</p>
       <div class="facts">
         <div class="fact"><b>${min === 0 ? 'Tiro directo' : min + ' ' + movesWord(min)}</b><span>para 3 estrellas</span></div>
-        <div class="fact"><b>${(lv.defenders || []).length}</b><span>defensores</span></div>
+        <div class="fact"><b>${defs.length - talls}</b><span>${defs.length - talls === 1 ? 'defensor' : 'defensores'}${talls ? ` · ${talls} ${talls === 1 ? 'pívot' : 'pívots'}` : ''}</span></div>
       </div>
       <ul class="howto">
         <li><b>Pase:</b> arrastra del jugador con la pelota a un compañero.</li>
@@ -550,6 +561,20 @@
       <p class="note">Juegas un movimiento por vez. Los rivales solo se mueven mientras se ejecuta tu movimiento.</p>
       <div class="actions"><button class="btn" id="m-go">A jugar</button></div>`,
     { 'm-go': () => { closeModal(); G.mode = 'plan'; } });
+  }
+
+  // ¿El defensor más cercano al punto donde falló el último movimiento es un pívot?
+  function tallCulprit() {
+    const res = G.anim && G.anim.res;
+    if (!res || res.ok || !res.failPos) return false;
+    const defs = G.level.defenders || [];
+    let best = null, bd = Infinity;
+    defs.forEach((d) => {
+      const p = E.defenderPos(d, res.leg.t1);
+      const dd = E.dist(p.x, p.y, res.failPos.x, res.failPos.y);
+      if (dd < bd) { bd = dd; best = d; }
+    });
+    return !!(best && best.tall);
   }
 
   function updateHintBtn() {
@@ -702,14 +727,19 @@
       const texts = {
         intercepcion: ['Pelota robada', 'Un defensor cortó el pase. Fíjate hacia dónde se mueven los rivales.'],
         robo: ['Te la robaron', 'Condujiste demasiado cerca de un defensor.'],
-        obstaculo: ['Pase bloqueado', 'La pelota chocó contra un obstáculo.'],
         tapon: ['Tapón', 'Tenías un defensor encima. Tira desde donde estés libre.'],
         lejos: ['Muy lejos', 'Tiraste desde fuera de la línea de triple: la pelota no llega.'],
         desviado: ['Tiro desviado', 'La línea no pasó por el centro del aro y la pelota pegó en el costado. Apunta con más precisión.'],
         corto: ['Tiro corto', 'Te faltó fuerza. Suelta más arriba en la barra, dentro de la zona verde.'],
         largo: ['Tiro largo', 'Te pasaste de fuerza y la pelota pegó en el tablero. Suelta antes, dentro de la zona verde.'],
       };
-      const t = texts[reason] || ['Jugada fallida', 'Inténtalo de nuevo.'];
+      // Si el que robó o tapó fue el pívot, el mensaje lo dice: su alcance es mayor
+      const tallTexts = {
+        intercepcion: ['El pívot la robó', 'El pívot llega más lejos que un defensor común: el pase pasó cerca de sus brazos. Pasa lejos de él.'],
+        robo: ['El pívot te la robó', 'Condujiste cerca del pívot, y sus brazos llegan más lejos que los de un defensor común.'],
+        tapon: ['Tapón del pívot', 'El pívot tapa tiros desde más lejos que un defensor común. Aléjate de él antes de tirar.'],
+      };
+      const t = (tallCulprit() && tallTexts[reason]) || texts[reason] || ['Jugada fallida', 'Inténtalo de nuevo.'];
       modal(`
         <span class="eyebrow">Nivel ${G.idx + 1}</span>
         <h2>${t[0]}</h2>
@@ -767,12 +797,16 @@
     const r = host.getBoundingClientRect();
     if (!r.width || !r.height) return;
     scene.resize(r.width, r.height, window.devicePixelRatio || 1);
+    // En la partida la interfaz va superpuesta al 3D: el encuadre deja libres las dos franjas
+    const inGame = host === stage;
+    scene.setInsets({ top: inGame ? $('game-top').offsetHeight : 0, bottom: inGame ? $('game-bottom').offsetHeight : 0 });
     // El encuadre depende del tamaño del área: se recalcula si se está planeando
     if (current === 'game' && G.st && (G.mode === 'plan' || G.mode === 'charge')) planCamera(true);
   }
   const observer = new ResizeObserver(resize);
   observer.observe(stage);
   observer.observe($('hero-court'));
+  observer.observe($('game-bottom'));
   window.addEventListener('resize', resize);
 
   // Mueve el canvas al contenedor de la pantalla activa (va primero para quedar debajo de la interfaz).
@@ -839,7 +873,6 @@
     mountCanvas($('hero-court'));
     cast.mine.concat(cast.rivals).forEach((p) => scene.remove(p.object));
     cast.hero.forEach((p) => scene.add(p.object));
-    scene.setLevel({ walls: [] });
     scene.overlay.clear();
     scene.overlay.line([{ x: HERO_SPOTS[0][0], y: HERO_SPOTS[0][1] }, { x: 245, y: 266 }], { color: '#FFFFFF', width: 3, arrow: true, alpha: 0.9 });
     scene.setCamera({ mode: 'cinematic', instant: true });
@@ -858,19 +891,16 @@
     G.myLooks.forEach((lk) => { const p = P3.create(lk); scene.add(p.object); cast.mine.push(p); });
     G.rivalLooks.forEach((lk) => { const p = P3.create(lk, { rival: true }); scene.add(p.object); cast.rivals.push(p); });
     scene.setTeams([G.mine.colors, G.rival.colors]);
-    scene.setLevel({ walls: G.level.walls || [] });
     scene.overlay.clear();
   }
   function enterGame() { mountCanvas(stage); }
 
-  // Puntos que la cámara debe encuadrar en modo plan: compañeros, defensores, obstáculos (el aro
-  // lo agrega la escena). Los obstáculos miden 10 de alto: se declaran con h negativa para que la
-  // escena no les sume la altura de un jugador.
+  // Puntos que la cámara debe encuadrar en modo plan: compañeros y defensores (el aro lo agrega
+  // la escena).
   function framingPoints(gt) {
     const pts = [];
     G.st.pos.forEach((p, i) => { if (i !== G.st.holder) pts.push({ x: p[0], y: p[1] }); });
     (G.level.defenders || []).forEach((d) => pts.push(E.defenderPos(d, gt)));
-    (G.level.walls || []).forEach((w) => { pts.push({ x: w[0], y: w[1], h: -42 }); pts.push({ x: w[2], y: w[3], h: -42 }); });
     return pts;
   }
   function planCamera(instant) {
@@ -913,9 +943,10 @@
     const hp = G.st.pos[G.st.holder];
     const a = { x: hp[0], y: hp[1] };
 
-    // Rutas de los defensores que se mueven, con una flecha hacia donde van y una huella que anticipa
+    // Alcance de robo de cada defensor (el del pívot es mayor) y, para los que se mueven, su ruta
+    // con una flecha hacia donde van y una huella que anticipa
     (lv.defenders || []).forEach((d, k) => {
-      ov.circle(defPos[k], E.REACH + E.BALL_R, { color: '#F0565B', dashed: true, alpha: 0.6, width: 1.4 });
+      ov.circle(defPos[k], E.defReach(d) + E.BALL_R, { color: '#F0565B', dashed: true, alpha: d.tall ? 0.75 : 0.6, width: d.tall ? 1.8 : 1.4 });
       if (!d.path) return;
       ov.line([[d.x, d.y]].concat(d.path), { color: '#FFFFFF', width: 2, dashed: true, alpha: 0.5 });
       const p0 = E.defenderPos(d, gt), p1 = E.defenderPos(d, gt + 0.08);
@@ -942,9 +973,7 @@
     } else if (d && d.kind === 'pass') {
       const bp = G.st.pos[d.to];
       const b = { x: bp[0], y: bp[1] };
-      const hit = E.wallHit(lv, a.x, a.y, b.x, b.y);
-      if (hit !== null) ov.line([a, { x: a.x + (b.x - a.x) * hit, y: a.y + (b.y - a.y) * hit }], { color: '#F0565B', width: 3.2, arrow: true });
-      else ov.line([a, b], { color: '#FFFFFF', width: 3.2, arrow: true });
+      ov.line([a, b], { color: '#FFFFFF', width: 3.2, arrow: true });
     } else if (d && d.kind === 'dribble') {
       const tgt = E.dribbleTarget(lv, G.st, d.x, d.y);
       ov.circle(a, E.dribbleMaxFor(lv, G.st.holder), { color: '#9FE8C3', dashed: true, alpha: 0.45, width: 1.4 });
@@ -964,9 +993,11 @@
     const r = cv.getBoundingClientRect();
     if (s.depth < 0 || s.x < 0 || s.y < 0 || s.x > r.width || s.y > r.height) { nameTag.hidden = true; return; }
     nameTag.textContent = L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`;
-    nameTag.style.left = s.x + 'px';
-    nameTag.style.top = s.y + 'px';
     nameTag.hidden = false;
+    // con la cámara girada el poseedor puede quedar en el borde: el cartel no se sale de la pantalla
+    const half = (nameTag.offsetWidth || 80) / 2 + 6;
+    nameTag.style.left = Math.max(half, Math.min(r.width - half, s.x)) + 'px';
+    nameTag.style.top = s.y + 'px';
   }
 
   // ---------------------------------------------------------------- Partida: un fotograma
@@ -1074,6 +1105,8 @@
 
     drawOverlay(now, gt, defPos);
     placeNameTag(G.mode === 'plan');
+    const ob = scene.getOrbit();
+    $('btn-recenter').classList.toggle('off', ob.goalYaw === 0 && ob.goalPitch === 0);
     scene.update(now, dt);
     scene.render();
   }
@@ -1083,7 +1116,7 @@
     A.doneAt = performance.now();
     const r = A.res;
     if (!r.ok) {
-      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!', desviado: '¡Desviada!' }[r.reason] || '¡Fallo!', 'bad');
+      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!', desviado: '¡Desviada!' }[r.reason] || '¡Fallo!', 'bad');
       try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* nada */ }
       G.mode = 'over';
       setTimeout(() => { clearFloat(); finishLevel(false, r.reason); }, 1500);
@@ -1149,27 +1182,46 @@
     return { kind: 'dribble', x: c.x, y: c.y };
   }
 
+  // Giro de la cámara con el dedo: un ancho de pantalla ≈ 180° de yaw; la inclinación va con dy.
+  const ORBIT_TAP = 6;                                   // px: menos que esto es un toque, no un arrastre
+  function orbitMove(p) {
+    const o = G.orbit, r = cv.getBoundingClientRect();
+    const dx = p.x - o.x0, dy = p.y - o.y0;
+    if (!o.active && Math.hypot(dx, dy) < ORBIT_TAP) return;
+    o.active = true;
+    scene.setOrbit({ yaw: o.yaw0 - (dx / Math.max(1, r.width)) * Math.PI, pitch: o.pitch0 + (dy / Math.max(1, r.height)) * (Math.PI / 3) });
+  }
   cv.addEventListener('pointerdown', (e) => {
     if (current !== 'game' || G.mode !== 'plan' || !$('modal').hidden) return;
+    if (G.drag || G.orbit) return;                       // un segundo dedo no cambia el gesto en curso
     const p = toPx(e);
     const hp = G.st.pos[G.st.holder];
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    clearFloat();
     if (pxDist(p, scene.courtToScreen(hp[0], hp[1], 25)) > 44) {
-      $('tipbar').textContent = 'Empieza desde el jugador que tiene la pelota (el del círculo amarillo).';
+      // Fuera del poseedor: el arrastre gira la cámara; un toque suelto solo muestra la pista
+      const o = scene.getOrbit();
+      G.orbit = { x0: p.x, y0: p.y, yaw0: o.goalYaw, pitch0: o.goalPitch, active: false };
       return;
     }
-    cv.setPointerCapture(e.pointerId);
     G.drag = { kind: null };
-    clearFloat();
   });
   cv.addEventListener('pointermove', (e) => {
+    if (G.orbit) { orbitMove(toPx(e)); return; }
     if (!G.drag) return;
     G.drag = classify(toPx(e));
   });
   const endDrag = (e) => {
+    try { cv.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    if (G.orbit) {
+      const o = G.orbit;
+      G.orbit = null;
+      if (!o.active) $('tipbar').textContent = 'Empieza desde el jugador que tiene la pelota (el del círculo amarillo). Arrastra fuera de él para girar la cámara.';
+      return;
+    }
     if (!G.drag) return;
     const d = G.drag;
     G.drag = null;
-    try { cv.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
     if (!d.kind) {
       $('tipbar').textContent = 'Arrastra hacia un compañero, hacia un espacio libre o hacia el aro.';
       return;
@@ -1199,10 +1251,9 @@
     $('meter-zone').style.height = (2 * w.half) + '%';
     $('meter-mark').style.top = '100%';
     $('meter-dist').textContent = (w.distance * 0.0417).toFixed(1).replace('.', ',') + ' m' + (w.pressure ? ' · marcado' : '');
-    // El medidor se apoya sobre el borde derecho de la cancha, centrado en su altura
-    const rc = cv.getBoundingClientRect(), rs = stage.getBoundingClientRect();
-    $('meter').style.right = Math.max(6, rs.right - rc.right + 6) + 'px';
-    $('meter-track').style.height = Math.round(rc.height * 0.5) + 'px';
+    // El medidor va sobre el borde derecho de la pantalla, centrado en su altura
+    const rc = cv.getBoundingClientRect();
+    $('meter-track').style.height = Math.round(Math.min(280, rc.height * 0.4)) + 'px';
     $('meter').hidden = false;
     // La barra lleva su propio reloj para no depender del ritmo de dibujo de la escena
     G.charge.timer = setInterval(() => updateCharge(performance.now()), 16);
@@ -1262,6 +1313,7 @@
   $('btn-game-back').onclick = () => { closeModal(); stopCharge(); show('levels'); };
   $('btn-reset').onclick = askRestart;
   $('btn-hint').onclick = useHint;
+  $('btn-recenter').onclick = () => scene.resetOrbit();
 
   // ---------------------------------------------------------------- Arranque
   requestAnimationFrame(frame);

@@ -1,0 +1,294 @@
+<meta charset="utf-8">
+<title>Jugada Maestra</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600;700&display=swap">
+<style>
+  /* Una sola estética: vestuario nocturno (azul profundo) y cancha de madera iluminada. */
+  :root {
+    --ink: #0E1A31;
+    --ink-2: #172A4B;
+    --line: #2B4069;
+    --paper: #F7EEDF;
+    --muted: #A8B6CB;
+    --ball: #F26B1D;
+    --ball-dark: #C24E0C;
+    --gold: #FFC53D;
+    --bad: #F0565B;
+    --good: #3CC17F;
+    --display: 'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', sans-serif;
+    --body: 'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    color-scheme: dark;
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--body);
+    font-size: 15px;
+    overflow: hidden;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app {
+    height: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .screen { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding-block: 12px; }
+  h1, h2, h3, .display { font-family: var(--display); text-wrap: balance; margin: 0; }
+  p { margin: 0; line-height: 1.45; }
+
+  button {
+    font: inherit;
+    color: inherit;
+    border: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  button:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+  .btn {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 13px 20px;
+    border-radius: 14px;
+    background: var(--ball);
+    color: #fff;
+    box-shadow: 0 4px 0 var(--ball-dark);
+    transition: transform .08s ease, box-shadow .08s ease;
+  }
+  .btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ball-dark); }
+  .btn.alt { background: var(--ink-2); box-shadow: 0 4px 0 #0A1324; border: 1px solid var(--line); }
+  .btn.gold { background: var(--gold); color: #3A2600; box-shadow: 0 4px 0 #B9860F; }
+  .btn.small { font-size: 16px; padding: 9px 14px; border-radius: 11px; }
+  .btn[disabled] { opacity: .45; pointer-events: none; }
+
+  /* Barra superior */
+  .hud { display: flex; align-items: center; gap: 8px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--ink-2); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 12px;
+    font-family: var(--display); font-weight: 700; font-size: 17px;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill small { font-family: var(--body); font-weight: 500; font-size: 12px; color: var(--muted); }
+  .heart { color: var(--bad); }
+  .coin {
+    width: 15px; height: 15px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #FFE28A, var(--gold) 55%, #C48B0B);
+    display: inline-block;
+  }
+  .hud .spacer { flex: 1; }
+  .icon-btn {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: var(--ink-2); border: 1px solid var(--line);
+    display: grid; place-items: center; font-size: 18px;
+  }
+
+  /* Inicio */
+  .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding-top: 8px; }
+  .brand .kicker { font-family: var(--display); font-weight: 600; letter-spacing: .18em; text-transform: uppercase; color: var(--ball); font-size: 14px; }
+  .brand h1 { font-size: 64px; line-height: .86; font-weight: 800; text-transform: uppercase; letter-spacing: -0.01em; }
+  .brand h1 span { color: var(--ball); }
+  .hero-court { flex: 1; min-height: 120px; border-radius: 20px; overflow: hidden; position: relative; border: 1px solid var(--line); }
+  .hero-court canvas { width: 100%; height: 100%; display: block; }
+  .team-card {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px;
+  }
+  .team-card .meta { flex: 1; min-width: 0; }
+  .team-card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .team-card .name { font-family: var(--display); font-weight: 700; font-size: 21px; line-height: 1.1; }
+  .crest {
+    width: 40px; height: 40px; border-radius: 50%; flex: none;
+    border: 2px solid rgba(255,255,255,.85);
+    box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  }
+  .crest.sm { width: 22px; height: 22px; border-width: 1.5px; }
+  .home-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .home-actions .btn:first-child { grid-column: 1 / -1; font-size: 26px; padding: 16px; }
+
+  /* Lista de niveles */
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding-bottom: 8px; }
+  .season h3 { font-size: 22px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; display: flex; align-items: center; gap: 8px; }
+  .season p { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+  .lvl {
+    aspect-ratio: 1; max-width: 100%;
+    border-radius: 16px; background: var(--ink-2); border: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    position: relative;
+  }
+  .lvl .num { font-family: var(--display); font-weight: 800; font-size: 34px; line-height: 1; }
+  .lvl .st { font-size: 13px; letter-spacing: 2px; color: var(--gold); }
+  .lvl .st .off { color: #3A4C70; }
+  .lvl.locked { opacity: .45; }
+  .lvl.current { border-color: var(--ball); box-shadow: inset 0 0 0 2px var(--ball); }
+  .lvl.nat::after {
+    content: 'Selección'; position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+    background: var(--gold); color: #3A2600; font-family: var(--display); font-weight: 700;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 6px;
+  }
+
+  /* Partida */
+  .game-top { display: flex; align-items: center; gap: 8px; }
+  .lvl-label { font-family: var(--display); font-weight: 700; font-size: 17px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.05; min-width: 0; }
+  .lvl-label small { display: block; font-family: var(--body); font-weight: 500; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stage { flex: 1; min-height: 0; display: grid; place-items: center; position: relative; }
+  #court { display: block; touch-action: none; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+  .tipbar { font-size: 13px; color: var(--muted); text-align: center; min-height: 2.6em; display: flex; align-items: center; justify-content: center; padding-inline: 8px; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .float-msg {
+    position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
+    font-family: var(--display); font-weight: 800; font-size: 54px; text-transform: uppercase;
+    color: #fff; text-shadow: 0 4px 0 rgba(0,0,0,.35), 0 0 24px rgba(0,0,0,.4);
+    pointer-events: none; white-space: nowrap;
+    animation: pop .5s cubic-bezier(.2,1.6,.4,1) both;
+  }
+  .float-msg.good { color: var(--gold); }
+  .float-msg.bad { color: #fff; }
+  @keyframes pop { from { transform: translate(-50%, -50%) scale(.3); opacity: 0; } to { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+
+  /* Ventanas */
+  #modal {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(5, 10, 22, .72);
+    display: flex; align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  }
+  .sheet {
+    width: 100%; max-width: 420px; max-height: 100%; overflow-y: auto;
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: 22px;
+    padding: 22px 20px 20px; display: flex; flex-direction: column; gap: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.5);
+    animation: rise .25s ease both;
+  }
+  @keyframes rise { from { transform: translateY(18px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .sheet h2 { font-size: 34px; font-weight: 800; text-transform: uppercase; line-height: .95; }
+  .sheet .eyebrow { font-family: var(--display); font-weight: 700; color: var(--ball); letter-spacing: .14em; text-transform: uppercase; font-size: 13px; }
+  .sheet .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+  .sheet .note { font-size: 12px; color: var(--muted); }
+  .big-stars { display: flex; justify-content: center; gap: 10px; font-size: 52px; line-height: 1; }
+  .big-stars span { color: #33466B; }
+  .big-stars span.on { color: var(--gold); animation: pop-star .45s cubic-bezier(.2,1.6,.4,1) both; }
+  .big-stars span:nth-child(2).on { animation-delay: .15s; }
+  .big-stars span:nth-child(3).on { animation-delay: .3s; }
+  @keyframes pop-star { from { transform: scale(0); } to { transform: scale(1); } }
+  .matchup { display: flex; align-items: center; gap: 10px; background: var(--ink); border-radius: 14px; padding: 10px 12px; }
+  .matchup .side { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-family: var(--display); font-weight: 700; font-size: 18px; line-height: 1.05; }
+  .matchup .side.right { justify-content: flex-end; text-align: right; }
+  .matchup .vs { font-family: var(--display); font-weight: 800; color: var(--muted); font-size: 15px; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .fact { background: var(--ink); border-radius: 12px; padding: 9px 11px; }
+  .fact b { display: block; font-family: var(--display); font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .fact span { font-size: 12px; color: var(--muted); }
+  .country-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .country {
+    display: flex; align-items: center; gap: 8px; text-align: left;
+    background: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 9px 10px;
+    font-weight: 600; font-size: 14px; min-width: 0;
+  }
+  .country .flag { font-size: 22px; line-height: 1; }
+  .country span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .country.sel { border-color: var(--ball); box-shadow: inset 0 0 0 2px var(--ball); }
+  .offer {
+    display: flex; align-items: center; gap: 12px; text-align: left;
+    background: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 12px;
+  }
+  .offer .meta { flex: 1; min-width: 0; }
+  .offer .name { font-family: var(--display); font-weight: 700; font-size: 20px; }
+  .offer .league { font-size: 13px; color: var(--muted); }
+  .offer .bonus { font-family: var(--display); font-weight: 700; color: var(--gold); font-size: 16px; white-space: nowrap; }
+  .perks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .perks li { display: flex; gap: 10px; align-items: flex-start; line-height: 1.35; }
+  .perks li::before { content: '✓'; color: var(--good); font-weight: 700; }
+  .price { font-family: var(--display); font-weight: 800; font-size: 40px; }
+  .price small { font-family: var(--body); font-size: 13px; font-weight: 500; color: var(--muted); }
+
+  /* Anuncio simulado */
+  #ad {
+    position: fixed; inset: 0; z-index: 30; background: #F4F4F1; color: #20242C;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; text-align: center;
+    padding: max(20px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) max(20px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+  }
+  #ad .tag { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #6B7280; }
+  #ad .box {
+    width: min(300px, 100%); aspect-ratio: 6 / 5; border: 2px dashed #B8BCC6; border-radius: 16px;
+    display: grid; place-items: center; padding: 16px; font-family: var(--display); font-size: 26px; font-weight: 700; color: #4B5563;
+  }
+  #ad .count { font-family: var(--display); font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+  #ad .btn.alt { color: var(--paper); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+
+<div id="app">
+  <!-- Inicio -->
+  <section class="screen" id="scr-home" hidden>
+    <div class="hud">
+      <span class="pill" id="home-lives"></span>
+      <span class="pill" id="home-coins"></span>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="btn-premium-top" aria-label="Premium">★</button>
+    </div>
+    <div class="brand">
+      <span class="kicker">Básquet de estrategia</span>
+      <h1>Jugada<br><span>Maestra</span></h1>
+    </div>
+    <div class="hero-court"><canvas id="hero"></canvas></div>
+    <div class="team-card" id="home-team"></div>
+    <div class="home-actions">
+      <button class="btn" id="btn-play">Jugar</button>
+      <button class="btn alt" id="btn-levels">Niveles</button>
+      <button class="btn alt" id="btn-team">Mi equipo</button>
+    </div>
+  </section>
+
+  <!-- Niveles -->
+  <section class="screen" id="scr-levels" hidden>
+    <div class="hud">
+      <button class="icon-btn" id="btn-levels-back" aria-label="Volver">←</button>
+      <h2 style="font-size:28px;text-transform:uppercase;">Temporadas</h2>
+      <span class="spacer"></span>
+      <span class="pill" id="levels-stars"></span>
+    </div>
+    <div class="scroll" id="levels-list"></div>
+  </section>
+
+  <!-- Partida -->
+  <section class="screen" id="scr-game" hidden>
+    <div class="game-top">
+      <button class="icon-btn" id="btn-game-back" aria-label="Volver a los niveles">←</button>
+      <div class="lvl-label" id="game-label"></div>
+      <span class="spacer" style="flex:1"></span>
+      <span class="pill" id="game-lives"></span>
+      <span class="pill" id="game-coins"></span>
+    </div>
+    <div class="stage" id="stage"><canvas id="court"></canvas></div>
+    <div class="tipbar" id="tipbar"></div>
+    <div class="controls">
+      <button class="btn alt small" id="btn-reset">Borrar jugada</button>
+      <button class="btn gold small" id="btn-hint">Ayuda · 30</button>
+    </div>
+  </section>
+</div>
+
+<div id="modal" hidden><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
+<div id="ad" hidden></div>
+
+<script src="engine.js"></script>
+<script src="levels.js"></script>
+<script src="game.js"></script>

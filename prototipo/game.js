@@ -339,6 +339,7 @@
       starRange: E.DEFAULT_RANGE + 14 * k.tiro,
       starPass: E.SPEED + 45 * k.pase,
       starDribble: E.DRIBBLE_MAX + 18 * k.manejo,
+      starShot: k.tiro,
     };
   }
   function rating() {
@@ -513,7 +514,8 @@
 
   function resetPlay() {
     G.st = E.initState(G.level);
-    G.anim = null; G.drag = null; G.hintCache = null;
+    G.anim = null; G.drag = null; G.hintCache = null; G.charge = null;
+    $('meter').hidden = true;
     G.mode = 'plan';
     clearFloat();
     $('tipbar').textContent = G.level.tip;
@@ -548,7 +550,7 @@
       <ul class="howto">
         <li><b>Pase:</b> arrastra del jugador con la pelota a un compañero.</li>
         <li><b>Conducir:</b> arrastra a un espacio libre para avanzar unos pasos.</li>
-        <li><b>Tiro:</b> arrastra hasta el aro.</li>
+        <li><b>Tiro:</b> arrastra hasta el aro; después mantén presionado para cargar fuerza y suelta en la zona verde.</li>
       </ul>
       <p class="note">Juegas un movimiento por vez. Los rivales solo se mueven mientras se ejecuta tu movimiento.</p>
       <div class="actions"><button class="btn" id="m-go">A jugar</button></div>`,
@@ -708,6 +710,8 @@
         obstaculo: ['Pase bloqueado', 'La pelota chocó contra un obstáculo.'],
         tapon: ['Tapón', 'Tenías un defensor encima. Tira desde donde estés libre.'],
         lejos: ['Muy lejos', 'Tiraste desde fuera de la línea de triple: la pelota no llega.'],
+        corto: ['Tiro corto', 'Te faltó fuerza. Suelta más arriba en la barra, dentro de la zona verde.'],
+        largo: ['Tiro largo', 'Te pasaste de fuerza y la pelota pegó en el tablero. Suelta antes, dentro de la zona verde.'],
       };
       const t = texts[reason] || ['Jugada fallida', 'Inténtalo de nuevo.'];
       modal(`
@@ -1240,6 +1244,7 @@
       if (el >= leg.t1 - leg.t0 && !A.done) { A.done = true; onMoveEnd(A); }
     }
 
+    if (G.mode === 'charge') updateCharge(now);
     drawWalls(g);
     if (!A) drawDefenderRoutes(g, gt, now);
 
@@ -1262,7 +1267,7 @@
     const holder = G.st.holder;
     G.st.pos.forEach((p, i) => {
       let x = p[0], y = p[1], pose = 'idle', jump = 0, ring = null;
-      if (i === holder) { pose = 'dribble'; ring = G.mode === 'plan' ? '#FFC53D' : null; }
+      if (i === holder) { pose = 'dribble'; ring = G.mode === 'plan' || G.mode === 'charge' ? '#FFC53D' : null; }
       if (leg && leg.who === i) {
         if (leg.type === 'dribble') { x = leg.from.x + (leg.to.x - leg.from.x) * f; y = leg.from.y + (leg.to.y - leg.from.y) * f; pose = f < 1 ? 'run' : 'dribble'; }
         if (leg.type === 'pass') pose = f < .35 ? 'pass' : 'idle';
@@ -1314,7 +1319,7 @@
     A.doneAt = performance.now();
     const r = A.res;
     if (!r.ok) {
-      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!' }[r.reason] || '¡Fallo!', 'bad');
+      floatMsg({ intercepcion: '¡Robo!', robo: '¡Robo!', obstaculo: '¡Bloqueada!', tapon: '¡Tapón!', lejos: '¡Corta!', corto: '¡Corta!', largo: '¡Larga!' }[r.reason] || '¡Fallo!', 'bad');
       try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* nada */ }
       G.mode = 'over';
       setTimeout(() => { clearFloat(); finishLevel(false, r.reason); }, 1100);
@@ -1380,8 +1385,11 @@
     }
     let move;
     if (d.kind === 'pass') move = { type: 'pass', to: d.to };
-    else if (d.kind === 'shot') move = { type: 'shot' };
-    else {
+    else if (d.kind === 'shot') {
+      move = { type: 'shot' };
+      // Si el tiro es posible (sin tapón y en distancia), primero hay que cargar la fuerza
+      if (E.step(G.level, G.st, move).ok) return startCharge();
+    } else {
       const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
       if (tgt.len < E.DRIBBLE_MIN) { $('tipbar').textContent = 'No hay espacio para conducir hacia ahí.'; return; }
       move = { type: 'dribble', x: d.x, y: d.y };
@@ -1392,6 +1400,65 @@
   };
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
+
+  // ---------------------------------------------------------------- Medidor de fuerza del tiro
+  const stage = $('stage');
+  function startCharge() {
+    const w = E.shotWindow(G.level, G.st);
+    G.charge = { w, value: 0, dir: 1, pressing: false, last: 0 };
+    G.mode = 'charge';
+    $('meter-zone').style.top = (100 - (w.ideal + w.half)) + '%';
+    $('meter-zone').style.height = (2 * w.half) + '%';
+    $('meter-mark').style.top = '100%';
+    $('meter-dist').textContent = (w.distance * 0.0417).toFixed(1).replace('.', ',') + ' m' + (w.pressure ? ' · marcado' : '');
+    // El medidor se apoya sobre el borde derecho de la cancha, centrado en su altura
+    const rc = cv.getBoundingClientRect(), rs = stage.getBoundingClientRect();
+    $('meter').style.right = Math.max(6, rs.right - rc.right + 6) + 'px';
+    $('meter-track').style.height = Math.round(rc.height * 0.5) + 'px';
+    $('meter').hidden = false;
+    $('tipbar').textContent = 'Mantén presionado para cargar fuerza y suelta dentro de la zona verde.';
+  }
+  // La barra sube y baja mientras se mantiene presionado.
+  function updateCharge(now) {
+    const c = G.charge;
+    if (!c) return;
+    if (c.pressing && c.last) {
+      c.value += c.dir * c.w.speed * (now - c.last) / 1000;
+      if (c.value >= 100) { c.value = 100; c.dir = -1; } else if (c.value <= 0) { c.value = 0; c.dir = 1; }
+    }
+    c.last = now;
+    $('meter-mark').style.top = (100 - c.value) + '%';
+  }
+  function releaseCharge() {
+    const c = G.charge;
+    if (!c || !c.pressing) return;
+    const power = c.value;
+    G.charge = null;
+    $('meter').hidden = true;
+    G.anim = { res: E.step(G.level, G.st, { type: 'shot', power }), real0: performance.now(), done: false };
+    G.mode = 'anim';
+    $('tipbar').textContent = '';
+  }
+  stage.addEventListener('pointerdown', (e) => {
+    if (G.mode !== 'charge' || !$('modal').hidden) return;
+    try { stage.setPointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    G.charge.pressing = true;
+    G.charge.last = performance.now();
+    e.preventDefault();
+  });
+  const endCharge = (e) => {
+    if (G.mode !== 'charge') return;
+    try { stage.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    releaseCharge();
+  };
+  stage.addEventListener('pointerup', endCharge);
+  stage.addEventListener('pointercancel', endCharge);
+
+  // Acceso de solo lectura para las pruebas automáticas.
+  window.__jm = {
+    get G() { return G; }, get S() { return S; }, E, LEVELS,
+    courtToScreen: (x, y) => { const r = cv.getBoundingClientRect(); return { x: r.left + x / W * r.width, y: r.top + y / H * r.height }; },
+  };
 
   // ---------------------------------------------------------------- Cancha del inicio
   let heroTeam = null;

@@ -106,6 +106,32 @@
     return { x: bx, y: by, len: dist(a[0], a[1], bx, by) };
   }
 
+  // Ventana de fuerza del tiro desde la situación actual: punto ideal (0–100), margen a cada
+  // lado y velocidad de la barra. Más lejos → más fuerza, menos margen y barra más rápida;
+  // un defensor cerca achica el margen; entrenar Tiro (solo tu jugador) lo agranda y frena la barra.
+  function shotWindow(level, st) {
+    const a = st.pos[st.holder];
+    const d = dist(a[0], a[1], HOOP.x, HOOP.y);
+    const range = rangeFor(level, st.holder);
+    const far = Math.min(1, d / range);
+    let near = Infinity;
+    for (const df of level.defenders || []) {
+      const p = defenderPos(df, st.t);
+      near = Math.min(near, dist(p.x, p.y, a[0], a[1]));
+    }
+    const skill = isStar(level, st.holder) ? (level.starShot || 0) : 0;
+    const pressure = near < 70;
+    let half = 15 - 6 * far + 2.5 * skill;
+    if (pressure) half -= 3 * (1 - near / 70);
+    return {
+      ideal: 38 + 50 * far,
+      half: Math.max(5, half),
+      speed: 70 + 40 * far - 8 * skill,
+      distance: d,
+      pressure,
+    };
+  }
+
   // ¿Algún defensor alcanza la pelota mientras viaja de a a b entre t0 y t0+dur?
   function checkSteal(level, a, b, t0, dur, reach) {
     const defs = level.defenders || [];
@@ -143,6 +169,20 @@
         const f = Math.max(0.55, (range / d) * 0.9);
         const to = { x: a.x + (HOOP.x - a.x) * f, y: a.y + (HOOP.y - a.y) * f };
         return { ok: false, reason: 'lejos', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to };
+      }
+      // Medidor de fuerza: si el movimiento trae power (0–100), tiene que caer en la ventana.
+      // Sin power (buscador de soluciones, ayuda) el tiro se considera perfecto.
+      if (move.power != null) {
+        const win = shotWindow(level, st);
+        if (move.power < win.ideal - win.half) {
+          const f = 0.82;
+          const to = { x: a.x + (HOOP.x - a.x) * f, y: a.y + (HOOP.y - a.y) * f };
+          return { ok: false, reason: 'corto', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to, power: move.power, window: win };
+        }
+        if (move.power > win.ideal + win.half) {
+          const to = { x: HOOP.x, y: HOOP.y - 16 };
+          return { ok: false, reason: 'largo', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true, board: true }, failPos: to, power: move.power, window: win };
+        }
       }
       next.t = t0 + SHOT_TIME;
       return { ok: true, scored: true, leg: { type: 'shot', from: a, to: { x: HOOP.x, y: HOOP.y }, t0, t1: t0 + SHOT_TIME }, state: next };
@@ -229,7 +269,7 @@
     COURT, HOOP, BALL_R, REACH, BLOCK_R, SPEED, DRIBBLE_SPEED, DRIBBLE_MAX, DRIBBLE_MIN, BODY_R,
     SHOT_TIME, DEFAULT_RANGE, WALL_T,
     dist, pointSegDist, defenderPos, wallHit, rangeFor, dribbleMaxFor, passSpeedFor,
-    initState, cloneState, dribbleTarget, step, simulate, solve, stars,
+    initState, cloneState, dribbleTarget, shotWindow, step, simulate, solve, stars,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Engine = api;

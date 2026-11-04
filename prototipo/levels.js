@@ -11,8 +11,8 @@
     // ---------- Temporada 1: club de tu país ----------
     {
       name: 'Primer tiro', stage: 'club',
-      tip: 'Arrastra desde el jugador con la pelota hasta el aro y suelta.',
-      players: [[180, 270]],
+      tip: 'Arrastra desde el jugador con la pelota hasta el aro y suelta. Después carga la fuerza y suelta en la zona verde.',
+      players: [[180, 210]],
       defenders: [],
     },
     {

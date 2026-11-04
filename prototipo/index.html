@@ -160,6 +160,30 @@
   .howto { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.35; }
   .howto b { color: var(--gold); font-weight: 600; }
   .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stage { touch-action: none; }
+  .meter {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    pointer-events: none; animation: rise .2s ease both;
+  }
+  .meter-label, .meter-dist {
+    font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); text-align: center; white-space: nowrap;
+  }
+  .meter-dist { font-size: 11px; color: var(--gold); }
+  .meter-track {
+    position: relative; width: 22px; height: 200px;
+    border-radius: 11px; border: 2px solid rgba(255,255,255,.85);
+    background: linear-gradient(to top, #3CC17F 0%, #FFC53D 55%, #F0565B 100%);
+    box-shadow: 0 4px 14px rgba(0,0,0,.45), inset 0 0 0 1px rgba(0,0,0,.25);
+    overflow: hidden;
+  }
+  .meter-track::before { content: ''; position: absolute; inset: 0; background: rgba(14,26,49,.55); }
+  .meter-zone { position: absolute; left: 0; right: 0; background: rgba(60,193,127,.95); box-shadow: 0 0 0 1px rgba(255,255,255,.7) inset; }
+  .meter-mark {
+    position: absolute; left: -2px; right: -2px; height: 5px; margin-top: -2.5px;
+    background: #fff; border-radius: 3px; box-shadow: 0 0 6px rgba(0,0,0,.6);
+  }
   .float-msg {
     position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
     font-family: var(--display); font-weight: 800; font-size: 54px; text-transform: uppercase;
@@ -328,7 +352,14 @@
       <span class="pill" id="game-lives"></span>
       <span class="pill" id="game-coins"></span>
     </div>
-    <div class="stage" id="stage"><canvas id="court"></canvas></div>
+    <div class="stage" id="stage">
+      <canvas id="court"></canvas>
+      <div class="meter" id="meter" hidden aria-live="polite">
+        <div class="meter-label">Fuerza</div>
+        <div class="meter-dist" id="meter-dist"></div>
+        <div class="meter-track" id="meter-track"><div class="meter-zone" id="meter-zone"></div><div class="meter-mark" id="meter-mark"></div></div>
+      </div>
+    </div>
     <div class="movebar" id="movebar"></div>
     <div class="tipbar" id="tipbar"></div>
     <div class="controls">

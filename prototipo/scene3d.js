@@ -206,6 +206,184 @@
     const tex = new T.CanvasTexture(c); tex.colorSpace = T.SRGBColorSpace; return tex;
   }
 
+  // ------------------------------------------------------------------ Atlas del público (impostores)
+  // Un lienzo con CROWD_V variantes de espectador × 2 cuadros (0 = sentado, 1 = de pie festejando).
+  // Mitad superior: color (las partes teñibles van en gris con su sombreado); mitad inferior: máscara
+  // (R = remera, G = color secundario, R+G = pelo, B = piel, negro = color fijo). El shader tiñe cada
+  // instancia con sus colores: así 12 dibujos dan miles de personas distintas en una sola textura.
+  const CROWD_V = 12, CROWD_CW = 128, CROWD_CH = 256;
+  const CROWD_VARIANTS = [
+    { top: 'remera', hair: 'corto', arms: 'regazo', pants: '#2f3f5c' },
+    { top: 'camiseta', hair: 'rapado', arms: 'aplauso', pants: '#1d1f26' },
+    { top: 'buzo', hair: 'largo', arms: 'regazo', pants: '#3a4252' },
+    { top: 'campera', hair: 'corto', arms: 'cruzados', extra: 'bufanda', pants: '#23262e', beard: true },
+    { top: 'remera', hair: 'coleta', arms: 'aplauso', pants: '#4a5670' },
+    { top: 'remera', hair: 'gorra', arms: 'regazo', pants: '#6d604c' },
+    { top: 'rayas', hair: 'rulos', arms: 'regazo', pants: '#25344f' },
+    { top: 'remera', hair: 'largo', arms: 'cartel', extra: 'cartel', pants: '#2f3f5c' },
+    { top: 'camiseta', hair: 'corto', arms: 'bandera', extra: 'bandera', pants: '#1d1f26' },
+    { top: 'buzo', hair: 'gorro', arms: 'regazo', extra: 'bufanda', pants: '#2b2f38' },
+    { top: 'remera', hair: 'pelado', arms: 'cruzados', pants: '#55504a', beard: true },
+    { top: 'remera', hair: 'rulos', arms: 'aplauso', pants: '#2f3f5c' },
+  ];
+  function crowdAtlas() {
+    const W = CROWD_CW * CROWD_V, H = CROWD_CH * 4;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    g.fillStyle = '#000'; g.fillRect(0, H / 2, W, H / 2);           // fondo de la máscara: "color fijo"
+    for (let v = 0; v < CROWD_V; v++) for (let f = 0; f < 2; f++) {
+      for (const mask of [false, true]) {
+        g.save();
+        g.translate(v * CROWD_CW, f * CROWD_CH + (mask ? H / 2 : 0));
+        g.beginPath(); g.rect(2, 2, CROWD_CW - 4, CROWD_CH - 4); g.clip();   // margen contra el sangrado de mipmaps
+        paintFan(g, mask, CROWD_VARIANTS[v], f);
+        g.restore();
+      }
+    }
+    const tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }
+  // Dibuja un espectador en una celda de 128 × 256 (cabeza en (64, 80); el borde inferior queda
+  // tapado por la fila de adelante). mask = true pinta la máscara de teñido en lugar del color.
+  function paintFan(g, mask, V, f) {
+    const MK = { shirt: '#f00', sec: '#0f0', skin: '#00f', hair: '#ff0' };
+    const gray = (k) => { const n = Math.round(Math.max(0, Math.min(1, k)) * 255); return `rgb(${n},${n},${n})`; };
+    const vg = (y0, y1, a, b) => { const gr = g.createLinearGradient(0, y0, 0, y1); gr.addColorStop(0, gray(a)); gr.addColorStop(1, gray(b)); return gr; };
+    // style: color fijo (css) o gris/degradado para las partes teñibles
+    const paint = (kind, style) => { g.fillStyle = mask ? (MK[kind] || '#000') : style; g.fill(); };
+    const limb = (kind, style, pts, w) => {
+      g.beginPath(); g.moveTo(pts[0], pts[1]);
+      for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]);
+      g.lineWidth = w; g.lineCap = 'round'; g.lineJoin = 'round';
+      g.strokeStyle = mask ? (MK[kind] || '#000') : style; g.stroke();
+    };
+    const ell = (x, y, rx, ry, a0, a1) => { g.beginPath(); g.ellipse(x, y, rx, ry, 0, a0 || 0, a1 == null ? Math.PI * 2 : a1); g.closePath(); };
+    const shade = (alpha, y0, y1) => {                       // oscurecido solo en el color (sombras)
+      if (mask) return;
+      const gr = g.createLinearGradient(0, y0, 0, y1);
+      gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, `rgba(0,0,0,${alpha})`);
+      g.save(); g.globalCompositeOperation = 'source-atop'; g.fillStyle = gr; g.fillRect(0, y0, 128, y1 - y0); g.restore();
+    };
+    const up = f === 1;
+    const skinG = vg(60, 200, 0.95, 0.78), hairG = vg(52, 110, 0.62, 0.38);
+    const sleeveKind = V.top === 'campera' ? 'fixed' : 'shirt';
+    const jacket = '#2a303c';
+    const topStyle = (y0, y1) => V.top === 'campera' ? jacket : vg(y0, y1, 0.93, 0.66);
+
+    // --- pelo de atrás (largo, rulos, coleta) y capucha
+    if (V.hair === 'largo') { g.beginPath(); g.moveTo(44, 70); g.quadraticCurveTo(40, 118, 50, 124); g.lineTo(78, 124); g.quadraticCurveTo(88, 118, 84, 70); g.closePath(); paint('hair', hairG); }
+    if (V.hair === 'rulos') { ell(64, 74, 27, 25); paint('hair', hairG); }
+    if (V.hair === 'coleta') { ell(86, 98, 7, 17); paint('hair', hairG); }
+    if (V.top === 'buzo') { ell(64, 110, 27, 11); paint('shirt', gray(0.55)); }
+
+    // --- piernas (sentado: muslos hacia el frente; de pie: piernas rectas)
+    if (up) { limb('fixed', V.pants, [50, 196, 48, 256], 24); limb('fixed', V.pants, [78, 196, 80, 256], 24); }
+    else { g.beginPath(); g.moveTo(32, 192); g.lineTo(96, 192); g.quadraticCurveTo(104, 240, 94, 252); g.lineTo(34, 252); g.quadraticCurveTo(24, 240, 32, 192); paint('fixed', V.pants); }
+
+    // --- torso
+    const torso = () => { g.beginPath(); g.moveTo(30, 126); g.quadraticCurveTo(32, 108, 50, 106); g.lineTo(78, 106); g.quadraticCurveTo(96, 108, 98, 126); g.lineTo(96, 202); g.lineTo(32, 202); g.closePath(); };
+    torso(); paint(V.top === 'campera' ? 'fixed' : 'shirt', topStyle(106, 202));
+    if (V.top === 'campera') { g.beginPath(); g.moveTo(54, 108); g.lineTo(74, 108); g.lineTo(70, 202); g.lineTo(58, 202); g.closePath(); paint('shirt', vg(106, 202, 0.9, 0.7)); }
+    if (V.top === 'rayas') { g.save(); torso(); g.clip(); for (let y = 122; y < 204; y += 22) { g.beginPath(); g.rect(20, y, 90, 10); paint('sec', vg(y, y + 10, 0.88, 0.75)); } g.restore(); }
+    if (V.top === 'camiseta') {                                  // musculosa: hombros de piel y vivos
+      for (const s of [-1, 1]) { g.beginPath(); g.moveTo(64 + s * 34, 128); g.quadraticCurveTo(64 + s * 33, 108, 64 + s * 20, 106); g.lineTo(64 + s * 18, 112); g.quadraticCurveTo(64 + s * 24, 128, 64 + s * 32, 150); g.closePath(); paint('skin', skinG); }
+      limb('sec', gray(0.85), [44, 108, 46, 126, 52, 150], 3.5); limb('sec', gray(0.85), [84, 108, 82, 126, 76, 150], 3.5);
+      limb('sec', gray(0.85), [52, 107, 64, 122, 76, 107], 4);
+    }
+    if (!mask && V.top !== 'campera') { g.save(); torso(); g.clip(); g.fillStyle = 'rgba(0,0,0,.16)'; g.fillRect(26, 106, 9, 100); g.fillRect(93, 106, 9, 100); g.restore(); }
+    // cuello y escote
+    g.beginPath(); g.rect(56, 94, 16, 16); paint('skin', skinG);
+    if (V.top !== 'camiseta') { ell(64, 107, 10, 5, 0, Math.PI); paint('skin', gray(0.72)); }
+
+    // --- brazos: [hombro, codo, mano] por lado según la postura
+    let arms;
+    if (up) arms = V.arms === 'cartel' ? [[34, 118, 26, 82, 30, 48], [94, 118, 102, 82, 98, 48]]
+      : V.arms === 'bandera' ? [[34, 118, 22, 76, 18, 34], [94, 118, 108, 80, 110, 40]]
+        : [[34, 118, 20, 72, 14, 28], [94, 118, 108, 72, 114, 28]];
+    else if (V.arms === 'aplauso') arms = [[33, 120, 26, 164, 58, 152], [95, 120, 102, 164, 70, 152]];
+    else if (V.arms === 'cruzados') arms = [[33, 120, 27, 166, 90, 160], [95, 120, 101, 168, 38, 166]];
+    else if (V.arms === 'cartel') arms = [[33, 120, 26, 160, 34, 176], [95, 120, 102, 160, 94, 176]];
+    else if (V.arms === 'bandera') arms = [[33, 120, 25, 166, 46, 196], [95, 120, 104, 160, 110, 150]];
+    else arms = [[33, 120, 25, 168, 46, 196], [95, 120, 103, 168, 82, 196]];
+    const longSleeve = V.top === 'buzo' || V.top === 'campera';
+    for (const a of arms) {
+      limb(longSleeve ? sleeveKind : 'skin', longSleeve ? (V.top === 'campera' ? jacket : gray(0.8)) : gray(0.86), a, 15);
+      if (!longSleeve && V.top !== 'camiseta') {                 // manga corta
+        const mx = a[0] + (a[2] - a[0]) * 0.5, my = a[1] + (a[3] - a[1]) * 0.5;
+        limb('shirt', gray(0.84), [a[0], a[1], mx, my], 18);
+      }
+      ell(a[4], a[5], 7.5, 7.5); paint('skin', gray(0.9));
+    }
+    if (!up && V.arms === 'cruzados') { limb(longSleeve ? sleeveKind : 'skin', longSleeve ? (V.top === 'campera' ? jacket : gray(0.76)) : gray(0.8), [27, 166, 90, 160], 14); }
+
+    // --- objetos
+    if (V.extra === 'cartel') {
+      const r = up ? [16, 4, 96, 46] : [28, 132, 72, 44];
+      g.beginPath(); g.rect(r[0], r[1], r[2], r[3]); paint('fixed', '#F4F1EA');
+      g.beginPath(); g.rect(r[0], r[1], r[2], 5); paint('sec', gray(0.85));
+      for (let k = 0; k < 2; k++) { g.beginPath(); g.rect(r[0] + 10, r[1] + 13 + k * 13, r[2] - 20 - k * 16, 7); paint(k ? 'shirt' : 'sec', gray(0.8)); }
+    }
+    if (V.extra === 'bandera') {
+      const sx = up ? 110 : 110, y0 = up ? 2 : 22, y1 = up ? 44 : 160;
+      limb('fixed', '#D8D8D8', [sx, y0, sx, y1], 3);
+      g.beginPath(); g.moveTo(sx, y0); g.quadraticCurveTo(sx - 26, y0 - 4, sx - 52, y0 + 4); g.lineTo(sx - 52, y0 + 18); g.quadraticCurveTo(sx - 26, y0 + 12, sx, y0 + 18); g.closePath(); paint('shirt', gray(0.9));
+      g.beginPath(); g.moveTo(sx, y0 + 18); g.quadraticCurveTo(sx - 26, y0 + 12, sx - 52, y0 + 18); g.lineTo(sx - 52, y0 + 32); g.quadraticCurveTo(sx - 26, y0 + 26, sx, y0 + 34); g.closePath(); paint('sec', gray(0.88));
+    }
+    if (V.extra === 'bufanda') {
+      if (up) {
+        g.beginPath(); g.rect(14, 18, 100, 13); paint('sec', gray(0.88));
+        for (let x = 22; x < 110; x += 18) { g.beginPath(); g.rect(x, 18, 6, 13); paint('shirt', gray(0.92)); }
+        ell(64, 108, 20, 6); paint('sec', gray(0.8));
+      } else {
+        ell(64, 108, 22, 7); paint('sec', gray(0.85));
+        for (const x of [53, 66]) { g.beginPath(); g.rect(x, 108, 10, 52); paint('sec', vg(108, 160, 0.88, 0.7)); g.beginPath(); g.rect(x, 140, 10, 6); paint('shirt', gray(0.92)); }
+      }
+    }
+
+    // --- cabeza: orejas, cara, pelo de adelante
+    ell(46.5, 83, 4, 6); paint('skin', gray(0.8)); ell(81.5, 83, 4, 6); paint('skin', gray(0.8));
+    ell(64, 80, 17, 20); paint('skin', vg(60, 100, 0.97, 0.82));
+    if (!mask) {                                               // sombreado lateral y del mentón
+      g.save(); ell(64, 80, 17, 20); g.clip();
+      const gr = g.createRadialGradient(60, 74, 6, 64, 80, 22); gr.addColorStop(0, 'rgba(255,255,255,.10)'); gr.addColorStop(1, 'rgba(0,0,0,.28)');
+      g.fillStyle = gr; g.fillRect(40, 56, 50, 50); g.restore();
+    }
+    if (V.beard) { g.beginPath(); g.ellipse(64, 86, 17, 14, 0, 0.05, Math.PI - 0.05); g.lineTo(52, 90); g.quadraticCurveTo(64, 96, 76, 90); g.closePath(); paint('hair', gray(0.5)); }
+    // ojos, cejas, nariz y boca
+    for (const x of [57, 71]) { ell(x, 81, 2.6, 2.3); paint('fixed', '#1a120c'); }
+    limb('hair', gray(0.45), [53, 75.5, 60, 74.5], 2.4); limb('hair', gray(0.45), [68, 74.5, 75, 75.5], 2.4);
+    if (!mask) { limb('skin', 'rgba(90,60,40,.35)', [64, 82, 65, 88, 62, 89], 2); }
+    if (up) { ell(64, 93, 5, 4.2); paint('fixed', '#4a1414'); }
+    else limb('fixed', '#7a3a30', [59, 92.5, 64, 94, 69, 92.5], 2);
+    // pelo / gorros
+    const h = V.hair;
+    if (h === 'corto' || h === 'largo' || h === 'coleta' || h === 'rulos') {
+      ell(64, 72, 18.5, 14, Math.PI, Math.PI * 2); paint('hair', hairG);
+      g.beginPath(); g.moveTo(45.5, 72); g.quadraticCurveTo(52, 64, 66, 69); g.quadraticCurveTo(76, 64, 82.5, 72); g.closePath(); paint('hair', hairG);
+      if (h === 'largo') { for (const s of [-1, 1]) { g.beginPath(); g.moveTo(64 + s * 18.5, 70); g.quadraticCurveTo(64 + s * 20, 100, 64 + s * 17, 118); g.lineTo(64 + s * 12, 118); g.quadraticCurveTo(64 + s * 15, 96, 64 + s * 12, 72); g.closePath(); paint('hair', hairG); } }
+      if (h === 'rulos') for (let k = 0; k < 7; k++) { ell(44 + k * 6.7, 66 + Math.abs(k - 3) * 1.6, 5.5, 5); paint('hair', vg(56, 76, 0.6, 0.42)); }
+      if (h !== 'rulos') { g.beginPath(); g.rect(45.5, 70, 4, 11); paint('hair', hairG); g.beginPath(); g.rect(78.5, 70, 4, 11); paint('hair', hairG); }
+    } else if (h === 'rapado') {
+      ell(64, 72, 17.6, 12.5, Math.PI, Math.PI * 2); paint('hair', vg(58, 72, 0.72, 0.6));
+    } else if (h === 'pelado') {
+      if (!mask) { ell(60, 66, 7, 4); g.fillStyle = 'rgba(255,255,255,.22)'; g.fill(); }
+      g.beginPath(); g.rect(46, 74, 4, 10); paint('hair', gray(0.6)); g.beginPath(); g.rect(78, 74, 4, 10); paint('hair', gray(0.6));
+    } else if (h === 'gorra') {
+      g.beginPath(); g.rect(46, 70, 4, 11); paint('hair', hairG); g.beginPath(); g.rect(78, 70, 4, 11); paint('hair', hairG);
+      ell(64, 71, 19, 14, Math.PI, Math.PI * 2); paint('sec', vg(57, 71, 0.95, 0.75));
+      ell(64, 71.5, 22, 4.5); paint('sec', gray(0.6));
+      ell(64, 60, 3, 2); paint('shirt', gray(0.9));
+    } else if (h === 'gorro') {
+      ell(64, 73, 19.5, 17, Math.PI, Math.PI * 2); paint('sec', vg(56, 73, 0.92, 0.72));
+      g.beginPath(); g.rect(44.5, 66, 39, 9); paint('shirt', gray(0.88));
+      ell(64, 54, 6, 6); paint('shirt', gray(0.95));
+    }
+    // sombra de la fila de adelante y del asiento (oclusión): oscurece la parte baja del cuerpo
+    shade(0.62, 150, 256);
+  }
+
   // ------------------------------------------------------------------ Creación de la escena
   function create(opts) {
     opts = opts || {};
@@ -292,6 +470,8 @@
       for (let k = 0; k < 18; k++) { ROWS.push({ off, y, depth: 15, upper: true }); off += 15; y += 11; }
       ROWS.walkOff = ROWS[12].off + 16; ROWS.walkY = ROWS[12].y; ROWS.topOff = off; ROWS.topY = y;
     }
+    // pasillos con escaleras: posiciones fijas a lo largo de cada lado (alineadas en todas las filas)
+    const AISLES = { z: [-420, -210, 0, 210, 420].map((d) => (BOWL.z0 + BOWL.z1) / 2 + d), x: [-330, -130, 130, 330] };
     function ringBoxes(off0, off1, y0, y1) {       // cuatro cajas que forman un anillo rectangular
       const cx = 0, cz = (BOWL.z0 + BOWL.z1) / 2;
       const hx0 = BOWL.x + off0, hx1 = BOWL.x + off1, hz0 = (BOWL.z1 - BOWL.z0) / 2 + off0, hz1 = (BOWL.z1 - BOWL.z0) / 2 + off1;
@@ -308,7 +488,7 @@
     for (const r of ROWS) standParts.push(...ringBoxes(r.off, r.off + r.depth, 0, r.y));
     standParts.push(...ringBoxes(ROWS.walkOff, ROWS[13].off, 0, ROWS.walkY));     // pasillo
     standParts.push(...ringBoxes(ROWS.topOff, ROWS.topOff + 20, 0, ROWS.topY + 64)); // pared superior
-    const standMat = track(new T.MeshStandardMaterial({ color: 0x8e95a3, roughness: 0.95 }));
+    const standMat = track(new T.MeshStandardMaterial({ color: 0x3e4453, roughness: 0.95 }));
     const stands = new T.Mesh(track(mergeGeoms(standParts)), standMat);
     world.add(stands);
     // pared frontal oscura + baranda del pasillo + baranda superior (merged, material oscuro)
@@ -316,8 +496,41 @@
     const railParts = ringBoxes(ROWS.walkOff - 1.5, ROWS.walkOff + 1.5, ROWS.walkY, ROWS.walkY + 10)
       .concat(ringBoxes(-1.5, 0, 15.2, 16.6))
       .concat(ringBoxes(ROWS[13].off - 2.5, ROWS[13].off - 0.5, ROWS[13].y - 11, ROWS[13].y + 10));
+    // respaldos de las butacas: una tira oscura por fila detrás del público, cortada en los pasillos
+    {
+      const cz = (BOWL.z0 + BOWL.z1) / 2;
+      const segs = (lo, hi, aisles) => {
+        const out = []; let a = lo;
+        for (const c of aisles.filter((v) => v > lo && v < hi).sort((p, q) => p - q)) { if (c - 13 > a) out.push([a, c - 13]); a = c + 13; }
+        if (hi > a) out.push([a, hi]);
+        return out;
+      };
+      for (const r of ROWS) {
+        const o = r.off + r.depth * 0.84, hx = BOWL.x + o, hz = (BOWL.z1 - BOWL.z0) / 2 + o, yb = r.y + 4;
+        for (const [a, b] of segs(cz - hz, cz + hz, AISLES.z)) for (const sx of [-1, 1]) railParts.push(placed(new T.BoxGeometry(2, 8, b - a), sx * hx, yb, (a + b) / 2));
+        for (const [a, b] of segs(-hx + 2, hx - 2, AISLES.x)) for (const sz of [-1, 1]) railParts.push(placed(new T.BoxGeometry(b - a, 8, 2), (a + b) / 2, yb, cz + sz * hz));
+      }
+    }
     const rails = new T.Mesh(track(mergeGeoms(railParts)), darkMat);
     world.add(rails);
+    // escaleras de los pasillos: escalones claros (con un medio escalón por fila) entre los bloques de butacas
+    {
+      const cz = (BOWL.z0 + BOWL.z1) / 2, parts = [];
+      ROWS.forEach((r, k) => {
+        const nx = ROWS[k + 1], rise = nx && nx.upper === r.upper ? nx.y - r.y : 0;
+        const mid = r.off + r.depth / 2, hx = BOWL.x + mid, hz = (BOWL.z1 - BOWL.z0) / 2 + mid;
+        for (const z of AISLES.z) for (const sx of [-1, 1]) {
+          parts.push(placed(new T.BoxGeometry(r.depth, 1, 22), sx * hx, r.y + 0.5, z));
+          if (rise) parts.push(placed(new T.BoxGeometry(r.depth / 2, rise / 2, 22), sx * (hx + r.depth / 4), r.y + rise / 4, z));
+        }
+        for (const x of AISLES.x) for (const sz of [-1, 1]) {
+          if (Math.abs(x) > BOWL.x + r.off - 12) continue;
+          parts.push(placed(new T.BoxGeometry(22, 1, r.depth), x, r.y + 0.5, cz + sz * hz));
+          if (rise) parts.push(placed(new T.BoxGeometry(22, rise / 2, r.depth / 2), x, r.y + rise / 4, cz + sz * (hz + r.depth / 4)));
+        }
+      });
+      world.add(new T.Mesh(track(mergeGeoms(parts)), track(new T.MeshStandardMaterial({ color: 0x8a909c, roughness: 0.9 }))));
+    }
 
     // carteles LED sobre la pared frontal (una sola malla, una textura)
     const ledTex = track(ledTexture());
@@ -361,73 +574,117 @@
       world.add(m);
     }
 
-    // ---------------------------------------------------------------- Público (InstancedMesh)
-    const SEATS = [];                      // { x, z, y, ry, edge, row, k }
+    // ---------------------------------------------------------------- Público (impostores instanciados)
+    // Cada espectador es un plano de 2 triángulos que gira sobre su eje vertical para mirar a la cámara,
+    // con una celda del atlas de personas (sentado o de pie festejando), teñida por instancia (remera,
+    // color secundario, piel, pelo). Todo el público son dos InstancedMesh con un único material.
+    const SEATS = [];                      // { x, z, y, edge, row, k }
     {
-      const cz = (BOWL.z0 + BOWL.z1) / 2;
+      const cz = (BOWL.z0 + BOWL.z1) / 2, rnd = lcg(7);
+      const aislesZ = AISLES.z, aislesX = AISLES.x;
+      const inAisle = (v, list) => list.some((a) => Math.abs(v - a) < 13);
       ROWS.forEach((r, row) => {
         const off = r.off + r.depth * 0.55, y = r.y;
         const hx = BOWL.x + off, hz = (BOWL.z1 - BOWL.z0) / 2 + off;
-        const step = 11;
+        const step = 10.2, shift = (row % 2) * step * 0.5;     // filas al tresbolillo: nadie tapa de lleno al de atrás
         const nz = Math.floor((hz * 2) / step), nx = Math.floor((hx * 2) / step);
+        const push = (st) => { if (rnd() > 0.025) SEATS.push(st); };   // algún asiento vacío suelto
         for (let i = 0; i < nz; i++) {
-          const z = cz - hz + (i + 0.5) * step;
-          SEATS.push({ x: -hx, z, y, ry: Math.PI / 2, edge: 0, row, k: i });
-          SEATS.push({ x: hx, z, y, ry: -Math.PI / 2, edge: 1, row, k: i });
+          const z = cz - hz + (i + 0.5) * step + shift;
+          if (z > cz + hz - 4 || inAisle(z, aislesZ)) continue;
+          push({ x: -hx, z, y, edge: 0, row, k: i });
+          push({ x: hx, z, y, edge: 1, row, k: i });
         }
         for (let i = 0; i < nx; i++) {
-          const x = -hx + (i + 0.5) * step;
-          if (Math.abs(x) >= hx - 8) continue;
-          SEATS.push({ x, z: cz - hz, y, ry: 0, edge: 2, row, k: i });
-          SEATS.push({ x, z: cz + hz, y, ry: Math.PI, edge: 3, row, k: i });
+          const x = -hx + (i + 0.5) * step + shift;
+          if (Math.abs(x) >= hx - 8 || inAisle(x, aislesX)) continue;
+          push({ x, z: cz - hz, y, edge: 2, row, k: i });
+          push({ x, z: cz + hz, y, edge: 3, row, k: i });
         }
       });
       // orden determinista mezclado para que al bajar la calidad queden asientos vacíos repartidos
-      const rnd = lcg(99);
       for (let i = SEATS.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = SEATS[i]; SEATS[i] = SEATS[j]; SEATS[j] = t; }
     }
-    // geometría de un espectador sentado: torso + cabeza (aSkin = 1 en la cabeza)
-    // Geometría de un espectador (≈34 triángulos): torso de 5 lados sin tapa inferior + cabeza icosaédrica.
-    function personGeometry(count, seedOffset) {
-      const body = placed(new T.CylinderGeometry(5.6, 4.6, 17, 5), 0, 8.5, 0);
-      const head = placed(new T.IcosahedronGeometry(4.2, 0), 0, 20.5, 0);
-      const m = mergeGeoms([body, head]);
-      const nb = body.geo.index.count;
-      const P = m.attributes.position.array, N = m.attributes.normal.array, U = m.attributes.uv.array;
-      const pos = [], nor = [], uv = [], skin = [];
-      for (let t = 0; t < P.length / 9; t++) {
-        if (N[t * 9 + 1] < -0.9 && N[t * 9 + 4] < -0.9) continue;          // tapa inferior: nunca se ve
-        for (let k = 0; k < 9; k++) { pos.push(P[t * 9 + k]); nor.push(N[t * 9 + k]); }
-        for (let k = 0; k < 6; k++) uv.push(U[t * 6 + k]);
-        for (let k = 0; k < 3; k++) skin.push(t * 3 >= nb ? 1 : 0);
+    // Variante de cada espectador: carteles y banderas son raros; el resto, parejo.
+    const VAR_POOL = [0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 0, 1, 2, 4, 5, 6, 9, 11, 3, 10];
+    function pickVariant(r) { return r < 0.035 ? 7 : r < 0.07 ? 8 : VAR_POOL[Math.floor((r - 0.07) / 0.93 * VAR_POOL.length)]; }
+    function crowdGeometry(set, seedOffset) {
+      const g = new T.PlaneGeometry(17.6, 35.2);
+      g.translate(0, 14.2, 0);                                 // base 3,4 unidades bajo el asiento
+      const n = set.length, data = new Float32Array(n * 4), rnd = lcg(5 + seedOffset);
+      for (let i = 0; i < n; i++) {
+        data[i * 4] = pickVariant(rnd());
+        data[i * 4 + 1] = rnd();                                // semilla (fase, pelo, ánimo)
+        data[i * 4 + 2] = 0.5;                                  // hinchada: 1 local, 0 visita (lo fija colorCrowd)
+        data[i * 4 + 3] = rnd();                                // tono de piel
       }
-      m.dispose();
-      const g = new T.BufferGeometry();
-      g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
-      g.setAttribute('normal', new T.Float32BufferAttribute(nor, 3));
-      g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
-      g.setAttribute('aSkin', new T.Float32BufferAttribute(skin, 1));
-      const seeds = new Float32Array(count), rnd = lcg(5 + seedOffset);
-      for (let i = 0; i < count; i++) seeds[i] = rnd();
-      g.setAttribute('aSeed', new T.InstancedBufferAttribute(seeds, 1));
+      g.setAttribute('aData', new T.InstancedBufferAttribute(data, 4));
+      g.setAttribute('aCol2', new T.InstancedBufferAttribute(new Float32Array(n * 3), 3));
       return g;
     }
-    const crowdUniforms = { uTime: { value: 0 } };
-    const crowdMat = track(new T.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }));
+    const crowdTex = track(crowdAtlas());
+    const crowdUniforms = { uTime: { value: 0 }, uCheer: { value: 1e3 } };
+    const crowdMat = track(new T.MeshBasicMaterial({ map: crowdTex, alphaTest: 0.5, alphaToCoverage: true }));
     crowdMat.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = crowdUniforms.uTime;
+      sh.uniforms.uCheer = crowdUniforms.uCheer;
       sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aSkin;\nattribute float aSeed;\nuniform float uTime;')
-        .replace('#include <color_vertex>', `#include <color_vertex>
-          float sk = fract(aSeed * 7.31);
-          vec3 skin = mix(vec3(0.93, 0.74, 0.58), vec3(0.32, 0.18, 0.10), sk);
-          float hairy = step(0.25, fract(aSeed * 5.3)) * smoothstep(20.8, 23.0, position.y);
-          vec3 hair = mix(vec3(0.08, 0.05, 0.03), vec3(0.45, 0.30, 0.15), fract(aSeed * 3.7)) ;
-          vColor.rgb = mix(vColor.rgb, mix(skin, hair, hairy), aSkin);`)
+        .replace('#include <common>', `#include <common>
+          attribute vec4 aData; attribute vec3 aCol2;
+          uniform float uTime; uniform float uCheer;
+          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying float vShade;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
-          float ph = aSeed * 40.0;
-          float lively = step(0.78, fract(aSeed * 13.7));
-          transformed.y += (0.5 + 0.5 * sin(uTime * 2.4 + ph)) * 1.4 * lively + sin(uTime * 1.1 + ph) * 0.25;`);
+          float sd = aData.y, ph = sd * 40.0;
+          // de pie: unos pocos animan solos de a ratos; al convertir se para casi toda la hinchada local
+          float lively = step(0.955, fract(sd * 13.7)) * step(0.62, fract(uTime * 0.11 + sd * 7.0));
+          float ce = uCheer - fract(sd * 5.1) * 0.45;              // cada uno reacciona con su demora
+          float wants = step(fract(sd * 3.3), mix(0.12, 0.92, aData.z));
+          float cheer = wants * step(0.0, ce) * step(ce, 3.4 + fract(sd * 2.7) * 1.2);
+          float stand = max(lively, cheer);
+          vec2 cell = vec2(aData.x, stand);
+          transformed.y += stand * 9.0 + cheer * abs(sin(ce * 7.0 + ph)) * 3.2 * step(0.35, fract(sd * 9.1))
+            + (1.0 - stand) * sin(uTime * 1.2 + ph) * 0.18;
+          transformed.x += sin(uTime * (1.0 + stand * 4.0) + ph) * (0.15 + stand * 0.5) * max(position.y, 0.0) / 32.0;
+          // giro sobre el eje vertical para mirar a la cámara
+          vec4 ic = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          vec2 dc = cameraPosition.xz - ic.xz;
+          float ang = atan(dc.x, dc.y);
+          transformed = vec3(transformed.x * cos(ang), transformed.y, -transformed.x * sin(ang));
+          // tintes de la instancia
+          vShirt = vec3(1.0);
+          #ifdef USE_INSTANCING_COLOR
+            vShirt = instanceColor.rgb;
+          #endif
+          vSec = aCol2;
+          float sk = aData.w;
+          vSkin = sk < 0.45 ? mix(vec3(0.98, 0.78, 0.64), vec3(0.86, 0.60, 0.44), sk / 0.45)
+                : sk < 0.8 ? mix(vec3(0.80, 0.54, 0.38), vec3(0.55, 0.34, 0.21), (sk - 0.45) / 0.35)
+                : mix(vec3(0.50, 0.31, 0.19), vec3(0.38, 0.23, 0.14), (sk - 0.8) / 0.2);
+          vSkin = pow(vSkin, vec3(2.2));
+          float hc = fract(sd * 17.3);
+          vHair = hc < 0.45 ? vec3(0.018, 0.013, 0.01) : hc < 0.72 ? vec3(0.07, 0.035, 0.015)
+                : hc < 0.84 ? vec3(0.42, 0.28, 0.12) : hc < 0.92 ? vec3(0.32, 0.30, 0.29) : vec3(0.30, 0.09, 0.03);
+          vHair *= 2.2;
+          // luz: un poco más oscuro arriba (lejos de los focos) y leve variación por persona
+          vShade = (0.9 + fract(sd * 23.1) * 0.16) * mix(1.0, 0.8, smoothstep(60.0, 380.0, ic.y));`);
+      // uv del atlas: celda (variante, sentado/de pie) calculada en begin_vertex
+      sh.vertexShader = sh.vertexShader.replace('#include <fog_vertex>', `#include <fog_vertex>
+          #ifdef USE_MAP
+            vMapUv = vec2((cell.x + 0.01 + uv.x * 0.98) / ${CROWD_V.toFixed(1)}, 1.0 - (cell.y + 1.0) * 0.25 + (0.004 + uv.y * 0.992) * 0.25);
+          #endif`);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying float vShade;`)
+        .replace('#include <map_fragment>', `
+          vec4 tc = texture2D(map, vMapUv);
+          vec3 mk = texture2D(map, vMapUv - vec2(0.0, 0.5)).rgb;
+          float wHair = min(mk.r, mk.g);
+          float wShirt = mk.r - wHair, wSec = mk.g - wHair, wSkin = mk.b;
+          float wt = clamp(wHair + wShirt + wSec + wSkin, 0.0, 1.0);
+          vec3 tint = vShirt * wShirt + vSec * wSec + vSkin * wSkin + vHair * wHair;
+          diffuseColor.rgb = (tc.rgb * (1.0 - wt) + tint * tc.r * 1.3) * vShade;
+          diffuseColor.a = tc.a;`)
+        .replace('#include <color_fragment>', '');
     };
     // Dos mallas instanciadas (mitad cercana al aro / mitad lejana) para que el frustum culling descarte
     // la que queda detrás de la cámara en las vistas de juego.
@@ -436,44 +693,66 @@
     const SEAT_SETS = [SEATS.filter((st) => st.z < 300), SEATS.filter((st) => st.z >= 300).sort((a, b) => a.z - b.z)];
     const FAR_Z = SEAT_SETS[1].map((st) => st.z);
     const crowds = SEAT_SETS.map((set, idx) => {
-      const mesh = new T.InstancedMesh(track(personGeometry(set.length, idx * 1000)), crowdMat, set.length);
+      const mesh = new T.InstancedMesh(track(crowdGeometry(set, idx * 1000)), crowdMat, set.length);
       const m = M4(), q = new T.Quaternion(), p = new T.Vector3(), s = new T.Vector3();
       const rnd = lcg(31 + idx);
       for (let i = 0; i < set.length; i++) {
         const st = set[i];
-        p.set(st.x, st.y + 0.2, st.z);
-        q.setFromEuler(new T.Euler(0, st.ry + (rnd() - 0.5) * 0.5, 0));
-        const sc = 0.82 + rnd() * 0.3;
-        s.set(sc, 0.9 + rnd() * 0.35, sc);
+        const along = (rnd() - 0.5) * 1.6;                      // nadie queda perfecto en la grilla
+        p.set(st.x + (st.edge >= 2 ? along : 0), st.y + 0.2, st.z + (st.edge < 2 ? along : 0));
+        const kid = rnd() < 0.05;
+        const sc = kid ? 0.8 : 0.9 + rnd() * 0.2;
+        s.set(sc, sc * (0.95 + rnd() * 0.1), sc);
         mesh.setMatrixAt(i, m.compose(p, q, s));
       }
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
-      mesh.boundingSphere.radius += 30;     // margen por el bamboleo y la escala
+      mesh.boundingSphere.radius += 30;     // margen por el giro, el salto y la escala
       world.add(mesh);
       return mesh;
     });
     let teams = [['#B3202A', '#F5F0E6'], ['#1C1C1C', '#E8B04B']];
     function colorCrowd() {
-      const col = new T.Color(), rnd = lcg(17);
+      const col = new T.Color(), c2 = new T.Color(), rnd = lcg(17);
       const home = new T.Color(teams[0][0]), home2 = new T.Color(teams[0][1]);
-      const away = new T.Color(teams[1][0]);
-      for (let c = 0; c < crowds.length; c++) for (let i = 0; i < SEAT_SETS[c].length; i++) {
-        const st = SEAT_SETS[c][i], crowd = crowds[c];
-        // secciones: bloques de ~12 asientos × 4 filas se inclinan por un color
-        const sec = Math.sin((st.edge * 17 + Math.floor(st.k / 12)) * 12.9898 + Math.floor(st.row / 4) * 78.233) * 43758.5453;
-        const bias = sec - Math.floor(sec);
-        const r = rnd();
-        if (r < 0.28 + bias * 0.3) col.copy(home).offsetHSL(0, 0, (rnd() - 0.5) * 0.22);
-        else if (r < 0.55 + bias * 0.2) col.copy(home2).offsetHSL(0, 0, -rnd() * 0.3);
-        else if (r < 0.82) col.setHSL(0.55 + rnd() * 0.15, 0.2 + rnd() * 0.2, 0.06 + rnd() * 0.16);   // oscuros (abrigos, jeans)
-        else if (r < 0.92) col.copy(away).offsetHSL(0, 0, (rnd() - 0.5) * 0.2);
-        else col.setHSL(rnd(), 0.55, 0.45);                                               // alguno suelto
-        crowd.setColorAt(i, col);
+      const away = new T.Color(teams[1][0]), away2 = new T.Color(teams[1][1]);
+      const white = new T.Color(0xf2f0ea), dark = new T.Color(0x1d2230);
+      for (let c = 0; c < crowds.length; c++) {
+        const crowd = crowds[c], geo = crowd.geometry, d = geo.attributes.aData.array, a2 = geo.attributes.aCol2.array;
+        for (let i = 0; i < SEAT_SETS[c].length; i++) {
+          const st = SEAT_SETS[c][i];
+          // secciones: bloques de ~12 asientos × 4 filas se inclinan por un color; la visita se agrupa
+          const sec = Math.sin((st.edge * 17 + Math.floor(st.k / 12)) * 12.9898 + Math.floor(st.row / 4) * 78.233) * 43758.5453;
+          const bias = sec - Math.floor(sec);
+          const awaySec = bias > 0.86;
+          const r = rnd();
+          let fan = 0.5;
+          if (awaySec ? r < 0.6 : r < 0.05) {                    // hinchas de la visita
+            fan = 0;
+            if (rnd() < 0.7) { col.copy(away).offsetHSL(0, 0, (rnd() - 0.5) * 0.16); c2.copy(away2); } else { col.copy(away2); c2.copy(away); }
+          } else if (r < 0.42 + bias * 0.25) {                   // camiseta del local
+            fan = 1; col.copy(home).offsetHSL(0, 0, (rnd() - 0.5) * 0.18); c2.copy(rnd() < 0.75 ? home2 : white);
+          } else if (r < 0.62 + bias * 0.15) {                   // segundo color del local
+            fan = 1; col.copy(home2).offsetHSL(0, 0, -rnd() * 0.18); c2.copy(home);
+          } else if (r < 0.9) {                                   // neutros: abrigos, buzos, remeras lisas
+            const t = rnd();
+            if (t < 0.45) col.setHSL(0.58 + rnd() * 0.1, 0.15 + rnd() * 0.2, 0.1 + rnd() * 0.14);
+            else if (t < 0.75) col.setHSL(0, 0, 0.12 + rnd() * 0.7);
+            else col.setHSL(rnd(), 0.35 + rnd() * 0.3, 0.35 + rnd() * 0.25);
+            c2.copy(rnd() < 0.6 ? home : dark); fan = rnd() < 0.5 ? 1 : 0.5;
+          } else { col.setHSL(rnd(), 0.55, 0.45); c2.copy(home2); fan = 0.5; }
+          crowd.setColorAt(i, col);
+          a2[i * 3] = c2.r; a2[i * 3 + 1] = c2.g; a2[i * 3 + 2] = c2.b;
+          d[i * 4 + 2] = fan;
+        }
+        crowd.instanceColor.needsUpdate = true;
+        geo.attributes.aCol2.needsUpdate = true; geo.attributes.aData.needsUpdate = true;
       }
-      for (const c of crowds) c.instanceColor.needsUpdate = true;
     }
     colorCrowd();
+    // Festejo: la hinchada local se para, salta y levanta los brazos unos segundos.
+    let cheerAt = -1e3, clock = 0;
+    function cheer() { cheerAt = clock; }
 
     // banderines sobre la baranda del pasillo (triángulos alternados con los colores del local)
     const pennantMat = track(new T.MeshBasicMaterial({ vertexColors: true, side: T.DoubleSide }));
@@ -994,7 +1273,9 @@
     function update(now, dt) {
       now = now / 1000;                              // now en ms (performance.now); dt en segundos
       if (dt == null) dt = 1 / 60; if (dt > 0.5) dt = dt / 1000; dt = Math.min(dt, 0.1);
+      clock = now;
       crowdUniforms.uTime.value = now;
+      crowdUniforms.uCheer.value = now - cheerAt;
       for (const h of hoops) animateNet(h);
       updateCamera(now, dt);
     }
@@ -1014,7 +1295,7 @@
     const api = {
       renderer, scene, camera, ball, overlay,
       hoop: { swish(t) { hoopNear.swish = t; }, group: hoopNear.group },
-      resize, setCamera, setOrbit, getOrbit, resetOrbit, setInsets, update, render, setQuality, setTeams, dispose,
+      resize, setCamera, setOrbit, getOrbit, resetOrbit, setInsets, update, render, setQuality, setTeams, cheer, dispose,
       add: (o) => dyn.add(o), remove: (o) => dyn.remove(o),
       courtToWorld: (x, y, h) => courtToWorld(x, y, h),
       worldToCourt, screenToCourt, courtToScreen,

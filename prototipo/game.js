@@ -1124,6 +1124,7 @@
     }
     if (r.scored) {
       floatMsg('¡Canasta!', 'good');
+      if (scene.cheer) scene.cheer();            // la hinchada local se para y festeja
       G.mode = 'over';
       setTimeout(() => { clearFloat(); finishLevel(true); }, 1500);
       return;

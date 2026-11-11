@@ -92,6 +92,7 @@
   // ángulo (músculos, pómulos); dy(a) desplaza la altura según el ángulo (hombros caídos, clavículas).
   // uv: { u0, u1, v0, v1 } región del atlas; v se reparte por longitud de arco del perfil.
   // opts.arc = [a0, a1] genera solo ese sector (abierto), p. ej. la barba al frente de la cara.
+  // opts.angles(t) (t de 0 a 1) reparte los ángulos de la vuelta completa (más densos al frente).
   // Devuelve BufferGeometry indexada y, en geo.userData.ringV, el v (0..1) de cada anillo.
   function tube(rings, opts) {
     opts = opts || {};
@@ -115,7 +116,7 @@
       ringV.push(v);
       const vv = lerp(uv.v0, uv.v1, v);
       for (let j = 0; j <= segs; j++) {
-        const a = arc[0] + (j / segs) * (arc[1] - arc[0]); // a = 0 → +z (frente)
+        const a = opts.angles ? opts.angles(j / segs) : arc[0] + (j / segs) * (arc[1] - arc[0]); // a = 0 → +z (frente)
         const f = r.f ? r.f(a) : 1;
         const x = (r.cx || 0) + r.rx * f * Math.sin(a), z = (r.cz || 0) + r.rz * f * Math.cos(a);
         pos.push(x, r.y + (r.dy ? r.dy(a) : 0), z);
@@ -249,9 +250,18 @@
         const k = 1 + (thick + (bump ? bump(a, el, i, j) : 0)) * edge;
         const nx = d.x / (R.x * R.x), ny = d.y / (R.y * R.y), nz = d.z / (R.z * R.z);
         const nl = Math.hypot(nx, ny, nz);
-        pos.push(c.x + d.x * R.x * k, c.y + d.y * R.y * k, c.z + d.z * R.z * k);
+        let px = c.x + d.x * R.x * k, py = c.y + d.y * R.y * k, pz = c.z + d.z * R.z * k;
+        // Debajo del cráneo (nuca, patillas) la cara/mandíbula puede salir del elipsoide: se empuja
+        // el pelo hacia afuera lo que sobresalga la piel, para que nunca quede tapado.
+        if (py / HS < 3.75) {
+          const hp = headPoint(py / HS, a, 0).multiplyScalar(HS);
+          const dh = Math.hypot(hp.x - c.x, hp.z - c.z), db = Math.hypot(d.x * R.x, d.z * R.z);
+          if (dh > db) { const hl = Math.hypot(px - c.x, pz - c.z) || 1; const kk2 = (hl + dh - db) / hl; px = c.x + (px - c.x) * kk2; pz = c.z + (pz - c.z) * kk2; }
+        }
+        pos.push(px, py, pz);
         nor.push(nx / nl, ny / nl, nz / nl);
-        if (uvPoint.u0 != null) uvs.push(lerp(uvPoint.u0, uvPoint.u1, j / segsA), lerp(uvPoint.v1, uvPoint.v0, i / segsE)); else uvs.push(uvPoint[0], uvPoint[1]);
+        if (uvPoint.ringV) uvs.push((a + PI) / (2 * PI), lerp(uvPoint.v0, uvPoint.v1, yToV(HEAD_RINGS, uvPoint.ringV, c.y + d.y * R.y)));   // misma textura que el cuero cabelludo
+        else if (uvPoint.u0 != null) uvs.push(lerp(uvPoint.u0, uvPoint.u1, j / segsA), lerp(uvPoint.v1, uvPoint.v0, i / segsE)); else uvs.push(uvPoint[0], uvPoint[1]);
       }
     }
     for (let i = 0; i < segsE; i++) for (let j = 0; j < segsA; j++) {
@@ -292,33 +302,136 @@
     return {
       k, kt, kc,
       hipY: 25.2, hipX: 3.5,
-      spineY: 3.3, chestY: 6.0, neckY: 6.2, headY: 0.4,
+      spineY: 3.3, chestY: 6.0, neckY: 6.2, headY: 0.55,
       shoulder: { x: 4.7 * kt + sh, y: 3.5, z: 0.2 },
       upperArm: 9.0, forearm: 8.6, hand: 3.6,
       thigh: 11.3, shin: 11.0, ankle: 2.9,
     };
   }
 
-  // Perfil de la cabeza (local del hueso 'head', que está en la base del cráneo). f(a) modela
-  // mentón, ángulos de la mandíbula, pómulos, cuencas, arco superciliar y occipital.
-  const HS = 0.97; // escala de la cabeza
+  // ------------------------------------------------------------------ Cabeza esculpida
+  // La cabeza es una malla densa de anillos horizontales (local del hueso 'head', en su base) cuyo
+  // radio sale de una función de escultura: cráneo elipsoidal de adulto arriba, mandíbula en U con
+  // ángulos marcados abajo, y rasgos sumados en unidades reales (arco superciliar, cuencas hundidas,
+  // pómulos, nariz con puente, punta y aletas integrada en la cara, labios, mentón). Las medidas se
+  // escriben con escala 1 y se multiplican por HS (cabeza de ~24 cm para un jugador de 1,95 m).
+  const HS = 0.9; // escala de la cabeza
   const PI = Math.PI;
-  const HEAD_RINGS = [
-    cap(0.2, 0.85),
-    { y: 0.45, rx: 1.2, rz: 1.1, cz: 0.85, f: shapeOf([[0, 0.5, 0.05]]) },                       // mentón
-    { y: 1.15, rx: 2.0, rz: 2.2, cz: 0.5, f: shapeOf([[0.95, 0.45, 0.07], [0, 0.4, 0.03]]) },     // mandíbula
-    { y: 1.95, rx: 2.22, rz: 2.5, cz: 0.3, f: shapeOf([[0, 0.45, 0.02], [1.15, 0.4, 0.03]]) },    // boca
-    { y: 2.75, rx: 2.32, rz: 2.65, cz: 0.15, f: shapeOf([[1.1, 0.42, 0.065], [0, 0.3, -0.02]]) }, // base de la nariz / pómulos
-    { y: 3.6, rx: 2.35, rz: 2.7, cz: 0.05, f: shapeOf([[0.42, 0.3, -0.04], [1.25, 0.4, 0.02]]) }, // ojos (cuencas)
-    { y: 4.4, rx: 2.35, rz: 2.7, cz: -0.05, f: shapeOf([[0, 0.9, 0.035], [PI, 0.9, 0.02]]) },     // cejas (arco superciliar)
-    { y: 5.3, rx: 2.22, rz: 2.6, cz: -0.25, f: shapeOf([[0, 0.8, 0.02], [PI, 0.8, 0.035]]) },     // frente
-    { y: 6.15, rx: 1.8, rz: 2.15, cz: -0.5, f: shapeOf([[PI, 0.9, 0.04]]) },                      // coronilla
-    cap(6.8, -0.65),
-  ].map((r) => ({ y: r.y * HS, rx: r.rx * HS, rz: r.rz * HS, cz: (r.cz || 0) * HS, f: r.f }));
-  const HEAD_NAMES = ['cap0', 'chin', 'jaw', 'mouth', 'nose', 'eyes', 'brow', 'forehead', 'crown', 'top'];
-  // Elipsoide del cráneo (para el pelo y la vincha)
-  const HEAD_C = new T.Vector3(0, 4.05 * HS, -0.25 * HS), HEAD_R = new T.Vector3(2.38 * HS, 2.85 * HS, 2.8 * HS);
-  // Línea de pelo: elevación máxima según el ángulo (a = 0 frente). front/side/back en radianes.
+  // Alturas de referencia de la cara (sin escalar)
+  const FY = { chin: 0.6, jaw: 1.0, lipLo: 1.42, mouth: 1.55, lipUp: 1.68, noseBase: 2.16, noseTip: 2.36, cheek: 2.95, eyes: 3.5, brow: 3.96, hairline: 5.42, top: 6.72 };
+  // Cráneo: elipsoide (centro y radios sin escalar). El pelo y la vincha se apoyan en él.
+  const SKULL_C = { y: 4.0, z: -0.25 }, SKULL_R = { x: 2.3, y: 2.72, z: 2.78 };
+  const G = (v, s) => Math.exp(-(v * v) / (s * s));
+  // Interpolación lineal en una tabla [[x, y], ...]
+  function table(tb, x) {
+    if (x <= tb[0][0]) return tb[0][1];
+    for (let i = 1; i < tb.length; i++) if (x <= tb[i][0]) { const k = (x - tb[i - 1][0]) / (tb[i][0] - tb[i - 1][0]); return lerp(tb[i - 1][1], tb[i][1], k); }
+    return tb[tb.length - 1][1];
+  }
+  // Catmull-Rom sobre una lista de llaves [{ y, ... }] para el campo `key`
+  function crKeys(keys, y, key) {
+    let i = 1; while (i < keys.length - 1 && y > keys[i].y) i++;
+    const p1 = keys[i - 1], p2 = keys[i], p0 = keys[Math.max(0, i - 2)], p3 = keys[Math.min(keys.length - 1, i + 1)];
+    const t = clamp((y - p1.y) / (p2.y - p1.y), 0, 1), t2 = t * t, t3 = t2 * t;
+    const a = p0[key], b = p1[key], c = p2[key], d = p3[key];
+    return 0.5 * ((2 * b) + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+  }
+  // Sección del cráneo a la altura y
+  function skullAt(y) {
+    const t = clamp((y - SKULL_C.y) / SKULL_R.y, -1, 1), s = Math.sqrt(Math.max(0, 1 - t * t));
+    return { rx: SKULL_R.x * s, rz: SKULL_R.z * s, cz: SKULL_C.z };
+  }
+  // Llaves de la cara y la mandíbula (debajo de los ojos); arriba manda el cráneo.
+  // jaw = refuerzo del ángulo de la mandíbula, back = recorte de la nuca (detrás entra el cuello)
+  const FACE_KEYS = [
+    { y: 0.12, rx: 0.35, rz: 0.45, cz: 1.35, jaw: 0, back: 0 },
+    { y: 0.3, rx: 1.12, rz: 1.08, cz: 1.15, jaw: 0, back: 0 },
+    { y: 0.6, rx: 1.55, rz: 1.64, cz: 0.82, jaw: 0.06, back: 0 },
+    { y: 1.0, rx: 1.8, rz: 2.02, cz: 0.5, jaw: 0.12, back: 0.02 },
+    { y: 1.55, rx: 1.9, rz: 2.32, cz: 0.18, jaw: 0.07, back: 0.04 },
+    { y: 2.2, rx: 2.06, rz: 2.55, cz: -0.06, jaw: 0.02, back: 0.03 },
+    { y: 2.85, rx: 2.18, rz: 2.66, cz: -0.2, jaw: 0, back: 0.01 },
+    Object.assign({ y: 3.3, jaw: 0, back: 0 }, skullAt(3.3)),
+    Object.assign({ y: 3.7, jaw: 0, back: 0 }, skullAt(3.7)),
+  ];
+  // Perfil de la nariz: saliente (unidades) y ancho (sigma del arco) según la altura
+  const NOSE_P = [[1.86, 0], [2.0, 0.1], [2.1, 0.33], [2.22, 0.55], [2.36, 0.64], [2.5, 0.6], [2.75, 0.5], [3.05, 0.4], [3.35, 0.3], [3.6, 0.17], [3.8, 0.06], [4.0, 0]];
+  const NOSE_W = [[2.0, 0.3], [2.2, 0.36], [2.42, 0.29], [2.8, 0.21], [3.3, 0.19], [3.7, 0.24]];
+  // Variación de la cara por jugador (semilla): nariz, mandíbula, mentón, arco superciliar, labios,
+  // pómulos. Se fija al construir cada jugador (buildBody) y vuelve a la neutra al terminar.
+  const FV0 = { nose: 1, noseW: 1, jaw: 1, chin: 1, brow: 1, lips: 1, cheek: 1 };
+  let FV = FV0;
+  function faceVariation(seed) {
+    const q = rng(seed ^ 0xface5);
+    const v = (a, b) => lerp(a, b, q());
+    return { nose: v(0.82, 1.15), noseW: v(0.88, 1.2), jaw: v(0.94, 1.07), chin: v(0.75, 1.3), brow: v(0.75, 1.25), lips: v(0.8, 1.3), cheek: v(0.8, 1.25) };
+  }
+  // Rasgos: desplazamiento radial (unidades sin escalar) en la altura y y el ángulo a (0 = frente)
+  function faceDisp(y, a) {
+    const aa = Math.abs(a), x = a * 2.55; // x ≈ distancia de arco al eje de la cara
+    let d = 0;
+    if (aa > 1.9) return 0;
+    d += 0.15 * FV.brow * G(y - 3.98, 0.22) * G(a, 0.85);               // arco superciliar
+    d += 0.05 * G(y - 4.0, 0.16) * G(aa - 0.5, 0.25);                   // hueso de la ceja sobre cada ojo
+    d -= 0.24 * G(y - 3.5, 0.25) * G(aa - 0.45, 0.2);                   // cuencas
+    d -= 0.07 * G(y - 3.74, 0.12) * G(aa - 0.45, 0.24);                 // pliegue bajo la ceja
+    d -= 0.035 * G(y - 3.95, 0.45) * G(aa - 1.18, 0.22);                // sienes
+    d += 0.11 * FV.cheek * G(y - 2.98, 0.3) * G(aa - 0.86, 0.3);         // pómulos
+    d -= 0.1 * G(y - 2.05, 0.34) * G(aa - 1.02, 0.3);                    // mejilla hundida bajo el pómulo
+    d += 0.07 * G(y - 1.85, 0.42) * G(a, 0.42);                         // arco dental (hocico)
+    d += 0.085 * FV.lips * G(y - FY.lipUp, 0.09) * G(x, 0.5);           // labio superior
+    d += 0.1 * FV.lips * G(y - FY.lipLo, 0.1) * G(x, 0.44);             // labio inferior
+    d -= 0.045 * G(y - FY.mouth, 0.05) * G(x, 0.52);                    // comisura
+    d -= 0.07 * G(y - 1.2, 0.12) * G(x, 0.55);                          // surco mentolabial
+    d += 0.13 * FV.chin * G(y - FY.chin, 0.27) * G(x, 0.8);             // mentón
+    d -= 0.02 * G(y - 2.0, 0.25) * G(Math.abs(x) - 0.66, 0.12);         // surco nasogeniano
+    // Nariz
+    const P = table(NOSE_P, y);
+    if (P > 0) d += P * FV.nose * G(x, table(NOSE_W, y) * FV.noseW);
+    d += 0.2 * G(y - 2.24, 0.13) * G(Math.abs(x) - 0.38 * FV.noseW, 0.13); // aletas
+    return d;
+  }
+  // Anillo de la cabeza a la altura y (sin escalar): { rx, rz, cz, f }
+  function headRingAt(y) {
+    let rx, rz, cz, jaw = 0, back = 0;
+    if (y >= 3.7) ({ rx, rz, cz } = skullAt(y));
+    else { rx = crKeys(FACE_KEYS, y, 'rx') * lerp(1, FV.jaw, smooth((2.5 - y) / 1.3)); rz = crKeys(FACE_KEYS, y, 'rz'); cz = crKeys(FACE_KEYS, y, 'cz'); jaw = crKeys(FACE_KEYS, y, 'jaw'); back = crKeys(FACE_KEYS, y, 'back'); }
+    const occ = 0.04 * G(y - 4.4, 0.9); // occipital
+    const f = (a) => {
+      const er = Math.hypot(rx * Math.sin(a), rz * Math.cos(a)) || 1e-3;
+      const sh = 1 + jaw * G(Math.abs(a) - 1.95, 0.35) - back * G(Math.abs(a) - PI, 0.8) + occ * G(Math.abs(a) - PI, 0.9);
+      return sh + faceDisp(y, a) / er;
+    };
+    return { rx, rz, cz, f };
+  }
+  // Alturas de los anillos: densos en la cara, más espaciados en el cráneo
+  const HEAD_YS = [0.12, 0.22, 0.34, 0.46, 0.58, 0.72, 0.86, 1.0, 1.12, 1.23, 1.33, 1.42, 1.5, 1.57, 1.64, 1.72, 1.81, 1.9, 1.99, 2.07, 2.15, 2.23, 2.31, 2.4, 2.5, 2.62, 2.76, 2.9, 3.04, 3.18, 3.31, 3.43, 3.54, 3.65, 3.76, 3.87, 3.98, 4.1, 4.24, 4.42, 4.66, 4.95, 5.28, 5.6, 5.9, 6.16, 6.38, 6.54, 6.65];
+  // Anillos escalados de la cabeza con la variación de cara vigente (FV)
+  function makeHeadRings() {
+    return [cap(0.02, 1.4)].concat(HEAD_YS.map((y) => Object.assign({ y }, headRingAt(y))), [cap(FY.top, SKULL_C.z)])
+      .map((r) => ({ y: r.y * HS, rx: r.rx * HS, rz: r.rz * HS, cz: (r.cz || 0) * HS, f: r.f }));
+  }
+  const HEAD_RINGS = makeHeadRings(); // de referencia (las alturas son las mismas para todos)
+  // Nombres de los anillos que usa la pintura de la cara (el más cercano a cada altura)
+  const HEAD_NAMES = HEAD_RINGS.map(() => '');
+  for (const [nm, y] of [['chin', FY.chin], ['jaw', FY.jaw], ['mouth', FY.mouth], ['nose', FY.noseBase], ['eyes', FY.eyes], ['brow', FY.brow], ['forehead', 4.95], ['crown', 6.25]]) {
+    let best = 1; for (let i = 1; i < HEAD_RINGS.length - 1; i++) if (Math.abs(HEAD_RINGS[i].y - y * HS) < Math.abs(HEAD_RINGS[best].y - y * HS)) best = i;
+    HEAD_NAMES[best] = nm;
+  }
+  HEAD_NAMES[0] = 'cap0'; HEAD_NAMES[HEAD_NAMES.length - 1] = 'top';
+  // Ángulos de la cabeza: más densos al frente (rasgos finos), espaciados atrás
+  const headAngles = (t) => { const s = 2 * t - 1; return PI * (0.34 * s + 0.66 * s * s * s); };
+  // Elipsoide del cráneo (para el pelo y la vincha), ya escalado
+  const HEAD_C = new T.Vector3(0, SKULL_C.y * HS, SKULL_C.z * HS), HEAD_R = new T.Vector3(SKULL_R.x * HS, SKULL_R.y * HS, SKULL_R.z * HS);
+  // Línea de pelo: elevación máxima (desde la coronilla) según |a|, por tabla. La estándar tiene
+  // entradas en las sienes, patillas delante de la oreja, el pelo pasa por encima de la oreja y baja a la nuca.
+  function hairlineTable(tb) { return (a) => table(tb, Math.abs(a)); }
+  const elOf = (y) => Math.acos(clamp((y - SKULL_C.y) / SKULL_R.y, -1, 1)); // elevación de una altura (sin escalar)
+  const HL_FULL = [[0, elOf(FY.hairline)], [0.35, elOf(FY.hairline + 0.02)], [0.7, elOf(FY.hairline + 0.22)], [0.95, elOf(FY.hairline - 0.1)], [1.12, elOf(3.6)], [1.24, elOf(3.05)], [1.34, elOf(3.3)], [1.42, elOf(4.15)], [1.85, elOf(4.2)], [2.15, elOf(3.4)], [2.6, elOf(2.75)], [PI, elOf(2.55)]];
+  const HAIRLINE_STD = hairlineTable(HL_FULL);
+  // Parte de arriba (volumen del corto): termina sobre las sienes y baja un poco atrás
+  const HAIRLINE_TOP = hairlineTable([[0, elOf(FY.hairline - 0.02)], [0.6, elOf(FY.hairline + 0.15)], [1.0, elOf(5.0)], [1.57, elOf(5.15)], [2.3, elOf(4.7)], [PI, elOf(4.3)]]);
+  // compatibilidad: hairline(front, side, back) en radianes
   function hairline(front, side, back) {
     return (a) => {
       const c = Math.cos(a), f = (c + 1) / 2, s = Math.sin(a) * Math.sin(a);
@@ -326,11 +439,20 @@
       return fb * (1 - s) + side * s;
     };
   }
-  const HAIRLINE_STD = hairline(1.27, 1.55, 1.9);
   // Punto sobre el elipsoide a una elevación/ángulo dados, con factor de radio kk
   function onHead(el, a, kk) {
     return new T.Vector3(HEAD_C.x + Math.sin(el) * Math.sin(a) * HEAD_R.x * kk, HEAD_C.y + Math.cos(el) * HEAD_R.y * kk, HEAD_C.z + Math.sin(el) * Math.cos(a) * HEAD_R.z * kk);
   }
+  // Punto de la superficie de la cara (sin escalar) a la altura y y el ángulo a, con un despegue `off`
+  function headPoint(y, a, off) {
+    const r = headRingAt(y), f = r.f(a);
+    const er = Math.hypot(r.rx * Math.sin(a), r.rz * Math.cos(a)) || 1e-3, k = f + (off || 0) / er;
+    return new T.Vector3(r.rx * k * Math.sin(a), y, r.cz + r.rz * k * Math.cos(a));
+  }
+  // Barba: borde superior e inferior (altura sin escalar) según |a|, y medio ancho angular
+  const BEARD_A = 1.5;
+  const BEARD_TOP = [[0, 1.3], [0.16, 1.33], [0.24, 1.5], [0.3, 1.78], [0.42, 1.98], [0.62, 2.06], [0.9, 2.3], [1.12, 2.75], [1.26, 3.15], [1.36, 3.4], [1.5, 3.4]];
+  const BEARD_BOT = [[0, 0.06], [0.5, 0.2], [0.9, 0.5], [1.2, 0.85], [1.5, 1.15]];
   // Ruido determinista periódico sobre el ángulo (mechones, vello de la barba)
   function ripple(a, n, amp, ph) { return amp * (0.6 * Math.sin(a * n + (ph || 0)) + 0.4 * Math.sin(a * (n * 1.7 + 1) + 1.3)); }
 
@@ -338,6 +460,10 @@
   // Convención de ángulos en los tubos: a = 0 frente (+z), a = ±π atrás; las extremidades se
   // modelan para el lado izquierdo (exterior = +x = +π/2, interior = −π/2) y se reflejan para el derecho.
   function buildBody(L) {
+    FV = faceVariation(L.seed);
+    try { return buildBodyInner(L); } finally { FV = FV0; }
+  }
+  function buildBodyInner(L) {
     const M = measures(L.body);
     const k = M.k, kt = M.kt, kc = M.kc;
     const bones = [];
@@ -370,52 +496,62 @@
     const add = (geo, boneName) => { parts.push({ geo, bone: B[boneName] }); return geo; };
     const OUT = PI / 2, IN = -PI / 2; // exterior / interior de una extremidad izquierda
 
-    // --- Cabeza: cráneo con planos faciales + orejas + nariz, cara en el atlas
-    const headGeo = tube(HEAD_RINGS, { segs: 28, uv: uvReg(REG.head) });
+    // --- Cabeza: malla esculpida (cráneo, cara, nariz y labios en una sola superficie), orejas pegadas
+    const headRings = makeHeadRings();
+    const headGeo = tube(headRings, { segs: 40, uv: uvReg(REG.head), angles: headAngles });
+    {
+      // v por longitud de arco, pero con más peso en la cara (y de 1 a 4,4): ~2× resolución vertical
+      const n = HEAD_RINGS.length, hreg = uvReg(REG.head), uvA = headGeo.attributes.uv, acc = [0];
+      for (let i = 1; i < n; i++) {
+        const p = headRings[i - 1], q = headRings[i], ym = (p.y + q.y) / 2 / HS;
+        const len = Math.hypot((p.rx + p.rz) / 2 - (q.rx + q.rz) / 2, p.y - q.y);
+        acc.push(acc[i - 1] + len * (1 + 2.2 * smooth((ym - 0.8) / 0.4) * smooth((4.6 - ym) / 0.4)));
+      }
+      const rv = acc.map((v) => v / acc[n - 1]);
+      for (let i = 0; i < n; i++) for (let j = 0; j <= 40; j++) uvA.setY(i * 41 + j, lerp(hreg.v0, hreg.v1, rv[i]));
+      headGeo.userData.ringV = rv;
+    }
     rings.head = { v: headGeo.userData.ringV, names: HEAD_NAMES };
-    rings.headDef = HEAD_RINGS;
+    rings.headDef = headRings;
     const earUV = swUV(SW.upperArm); // piel lisa
     const pieces = [headGeo];
     for (const sg of [-1, 1]) {
-      // Oreja: pabellón (elipsoide achatado) + concha interior más pequeña y hundida
-      const ear = new T.SphereGeometry(0.7, 9, 7);
-      ear.scale(0.4, 1.12, 0.82); ear.rotateY(sg * 0.32); ear.translate(sg * 2.36 * HS, 3.45 * HS, -0.3 * HS);
-      pieces.push(flatUV(ear, earUV[0], earUV[1]));
-      const lobe = new T.SphereGeometry(0.32, 7, 5);
-      lobe.scale(0.5, 0.9, 0.8); lobe.translate(sg * 2.42 * HS, 2.75 * HS, -0.15 * HS);
-      pieces.push(flatUV(lobe, earUV[0], earUV[1]));
+      // Oreja: concha plana apoyada en el cráneo + reborde (hélice) que deja la concha hundida + lóbulo.
+      // Va de la altura de la ceja a la base de la nariz, un poco detrás del centro, apenas despegada atrás.
+      const yE = 3.05, rr = headRingAt(yE), xs = rr.rx * rr.f(sg * PI / 2);
+      const place = (g) => { g.rotateX(-0.2); g.rotateY(-sg * 0.22); g.translate(sg * xs, yE, -0.45); g.scale(HS, HS, HS); return flatUV(g, earUV[0], earUV[1]); };
+      const shell = new T.SphereGeometry(1, 12, 9); shell.scale(0.13, 0.74, 0.42); shell.translate(sg * 0.05, 0, 0);
+      pieces.push(place(shell));
+      // hélice abierta: nace adelante (sobre el trago), pasa por arriba y atrás y baja hasta el lóbulo
+      const helix = new T.TorusGeometry(0.56, 0.095, 6, 18, PI * 1.45); helix.rotateZ(PI * 1.5 + 0.25); helix.rotateY(PI / 2); helix.scale(1, 1.28, 0.72); helix.translate(sg * 0.13, 0.04, -0.02);
+      pieces.push(place(helix));
+      const lobe = new T.SphereGeometry(1, 8, 6); lobe.scale(0.12, 0.24, 0.2); lobe.translate(sg * 0.1, -0.74, 0.1);
+      pieces.push(place(lobe));
+      const tragus = new T.SphereGeometry(1, 6, 5); tragus.scale(0.1, 0.16, 0.12); tragus.translate(sg * 0.05, -0.12, 0.42);
+      pieces.push(place(tragus));
     }
-    // Nariz: puente, punta y aletas
-    const nose = new T.SphereGeometry(0.48, 9, 7);
-    nose.scale(0.88, 0.95, 1.1); nose.translate(0, 2.85 * HS, 2.62 * HS);
-    pieces.push(flatUV(nose, earUV[0], earUV[1]));
-    const bridge = new T.SphereGeometry(0.32, 7, 6);
-    bridge.scale(0.78, 2.3, 0.9); bridge.translate(0, 3.55 * HS, 2.42 * HS);
-    pieces.push(flatUV(bridge, earUV[0], earUV[1]));
-    for (const sg of [-1, 1]) {
-      const wing = new T.SphereGeometry(0.3, 7, 5);
-      wing.scale(1.0, 0.8, 0.9); wing.translate(sg * 0.5 * HS, 2.72 * HS, 2.35 * HS);
-      pieces.push(flatUV(wing, earUV[0], earUV[1]));
-    }
-    // Barba con volumen: casco sobre mandíbula y mentón (sector frontal), con vello irregular
+    // Barba: cáscara fina que sigue la mandíbula y el mentón (misma superficie de la cara, despegada
+    // unos milímetros), con el borde superior en diagonal de la comisura a la patilla y bordes afinados.
     if (L.beard) {
-      const hairUV0 = swUV(SW.hair);
-      const bf = (base, kk, n, ph) => (a) => base(a) * kk + ripple(a, n, 0.018, ph);
-      const beardRings = [
-        { y: 0.05 * HS, rx: 1.05 * HS, rz: 0.95 * HS, cz: 0.95 * HS, f: (a) => 1 + ripple(a, 9, 0.03, 0.4) },
-        { y: 0.42 * HS, rx: 1.34 * HS, rz: 1.24 * HS, cz: 0.9 * HS, f: bf(HEAD_RINGS[1].f, 1.0, 11, 0.2) },
-        { y: 1.15 * HS, rx: 2.16 * HS, rz: 2.36 * HS, cz: 0.52 * HS, f: bf(HEAD_RINGS[2].f, 1.0, 13, 1.0) },
-        { y: 1.75 * HS, rx: 2.36 * HS, rz: 2.64 * HS, cz: 0.32 * HS, f: bf(HEAD_RINGS[3].f, 1.0, 15, 2.1), dy: (a) => (-0.3 + 1.05 * Math.min(1, Math.abs(a) / 1.35)) * HS },
-        { y: 2.2 * HS, rx: 2.3 * HS, rz: 2.6 * HS, cz: 0.22 * HS, f: (a) => HEAD_RINGS[3].f(a) * (Math.abs(a) < 0.9 ? 0.96 : 1.0), dy: (a) => (-0.1 + 0.9 * Math.min(1, Math.abs(a) / 1.35)) * HS },
-      ];
-      const beard = tube(beardRings, { segs: 24, uv: uvReg(REG.head), arc: [-1.5, 1.5] });
-      // Misma textura que la cara: v según la altura del anillo base (sin dy), u según el ángulo
-      const bp = beard.attributes.position, buv = beard.attributes.uv, hreg = uvReg(REG.head);
-      for (let i = 0; i < beardRings.length; i++) {
-        const v = lerp(hreg.v0, hreg.v1, yToV(HEAD_RINGS, headGeo.userData.ringV, beardRings[i].y));
-        for (let j = 0; j <= 24; j++) { const vi = i * 25 + j; const a = -1.5 + (j / 24) * 3.0; buv.setXY(vi, (a + PI) / (2 * PI), v); }
+      const nA = 34, nY = 10, A = BEARD_A, hreg = uvReg(REG.head);
+      const pos = [], uvs = [], idx = [];
+      for (let i = 0; i <= nY; i++) {
+        for (let j = 0; j <= nA; j++) {
+          const a = -A + (2 * A * j) / nA, aa = Math.abs(a);
+          const yT = table(BEARD_TOP, aa), yB = table(BEARD_BOT, aa), t = i / nY;
+          const y = lerp(yB, yT, t);
+          const edge = smooth(Math.min(t * 3, (1 - t) * 5)) * smooth((A - aa) / 0.2);
+          const off = (0.07 + 0.08 * G(a, 0.55) * G(y - 0.6, 0.55) + ripple(a, 17, 0.012, i)) * edge;
+          const pnt = headPoint(y, a, off).multiplyScalar(HS);
+          pos.push(pnt.x, pnt.y, pnt.z);
+          uvs.push((a + PI) / (2 * PI), lerp(hreg.v0, hreg.v1, yToV(HEAD_RINGS, headGeo.userData.ringV, y * HS)));
+        }
       }
-      void bp;
+      for (let i = 0; i < nY; i++) for (let j = 0; j < nA; j++) { const q = i * (nA + 1) + j; idx.push(q, q + 1, q + nA + 1, q + 1, q + nA + 2, q + nA + 1); }
+      const beard = new T.BufferGeometry();
+      beard.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      beard.setAttribute('uv', new T.Float32BufferAttribute(uvs, 2));
+      beard.setIndex(idx); beard.computeVertexNormals();
       pieces.push(beard);
     }
     add(merge(pieces.map((g) => bindTo(g, I('head')))), 'head');
@@ -433,13 +569,25 @@
       { y: 9.0, rx: 5.9 * kt + sx, rz: 3.25 * kc, cz: 0.15, f: shapeOf([[0, 0.5, -0.02], [PI, 0.6, 0.02]]), dy: droop(0.55) },     // hombros
       { y: 9.9, rx: 5.15 * kt + sx * 0.6, rz: 2.85 * kc, cz: 0.05, f: shapeOf([[0, 0.5, -0.035]]), dy: droop(1.0) },
       { y: 10.9, rx: 3.35 * kt, rz: 2.25 * kc, cz: -0.05, f: shapeOf([[0, 0.6, -0.08], [PI, 0.75, 0.09]]), dy: droop(0.75) },  // trapecios / clavículas
-      { y: 11.5, rx: 1.5, rz: 1.42, cz: 0, f: shapeOf([[PI, 0.8, 0.08], [0, 0.4, -0.04]]) },                                     // base del cuello
-      { y: 13.0, rx: 1.32, rz: 1.3, cz: 0.1, f: shapeOf([[PI, 0.8, 0.04]]) },                                                      // cuello (entra en la cabeza)
+      { y: 11.5, rx: 1.78 + 0.3 * (kt - 1), rz: 1.58, cz: -0.08, f: shapeOf([[PI, 0.8, 0.1], [0, 0.35, -0.05], [0.75, 0.3, 0.04]]) }, // base del cuello (trapecios, esternocleidomastoideos)
+      { y: 12.5, rx: 1.5 + 0.25 * (kt - 1), rz: 1.44, cz: -0.02, f: shapeOf([[0.7, 0.32, 0.05], [0, 0.3, 0.02], [PI, 0.8, 0.03]]) }, // cuello
+      { y: 13.4, rx: 1.46 + 0.2 * (kt - 1), rz: 1.42, cz: -0.12, f: shapeOf([[0.75, 0.35, 0.03]]), dy: (a) => 0.5 * G(Math.abs(a) - PI, 1.0) }, // nuca y garganta
+      { y: 14.1, rx: 1.36, rz: 1.3, cz: -0.3, dy: (a) => 0.7 * G(Math.abs(a) - PI, 1.0) },                                         // entra en la base del cráneo
     ];
     const torsoGeo = tube(torsoRings, { segs: 26, uv: uvReg(REG.torso) });
-    rings.torso = { v: torsoGeo.userData.ringV, names: ['in', 'waist', 'ribs', 'chest', 'pecs', 'shoulders', 'shTop', 'traps', 'neckBase', 'neckTop'], def: torsoRings };
-    // El cuello sigue en parte al hueso del cuello
-    add(bindBlend(torsoGeo, I('spine'), I('neck'), 10.9, 13.0, 0.85), 'spine');
+    rings.torso = { v: torsoGeo.userData.ringV, names: ['in', 'waist', 'ribs', 'chest', 'pecs', 'shoulders', 'shTop', 'traps', 'neckBase', 'neckMid', 'neckTop', 'neckIn'], def: torsoRings };
+    // El cuello sigue al hueso del cuello y, arriba (dentro del cráneo), en parte a la cabeza
+    {
+      const c = torsoGeo.attributes.position.count, pp = torsoGeo.attributes.position;
+      const si = new Uint16Array(c * 4), sw = new Float32Array(c * 4);
+      for (let i = 0; i < c; i++) {
+        const y = pp.getY(i);
+        const wn = smooth((y - 10.6) / 2.2) * 0.9, wh = smooth((y - 12.9) / 1.2) * 0.6;
+        si[i * 4] = I('spine'); sw[i * 4] = 1 - wn; si[i * 4 + 1] = I('neck'); sw[i * 4 + 1] = wn * (1 - wh); si[i * 4 + 2] = I('head'); sw[i * 4 + 2] = wn * wh;
+      }
+      torsoGeo.setAttribute('skinIndex', new T.BufferAttribute(si, 4)); torsoGeo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
+    }
+    add(torsoGeo, 'spine');
 
     // --- Pelvis (parte alta del short, tela holgada), cerrada por abajo
     const pelvisRings = [
@@ -481,15 +629,16 @@
         { y: -7.3, rx: 3.45 * k, rz: 3.55 * k, cz: 0 },      // ruedo
         { y: -7.45, rx: 2.4 * k, rz: 2.5 * k, cz: 0, f: shapeOf([[0.4, 0.5, 0.06], [PI, 0.6, 0.04]]) }, // piel bajo el ruedo
         { y: -9.5, rx: 2.05 * k, rz: 2.12 * k, cz: 0.05, f: shapeOf([[0.45, 0.45, 0.07], [OUT, 0.5, 0.03], [PI, 0.5, 0.025]]) },
-        { y: -11.3, rx: 1.72 * k, rz: 1.82 * k, cz: 0.1, f: shapeOf([[0, 0.5, 0.05]]) },               // rodilla (rótula)
+        { y: -10.5, rx: 1.78 * k, rz: 1.86 * k, cz: 0.08, f: shapeOf([[0, 0.5, 0.05]]) },               // rodilla
+        { y: -11.3, rx: 1.7 * k, rz: 1.76 * k, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },                // anillo compartido con la pantorrilla
       ];
       const th = tube(thighRings, { segs: 16, uv: uvReg(REG.thigh) });
-      rings.thigh = { v: th.userData.ringV, names: ['top', 'hip', 'mid', 'low', 'hem', 'skin', 'lower', 'knee'] };
+      rings.thigh = { v: th.userData.ringV, names: ['top', 'hip', 'mid', 'low', 'hem', 'skin', 'lower', 'knee', 'joint'] };
       if (mir) mirrorX(th);
-      add(bindBlend(th, I('thigh' + s), I('knee' + s), -9.4, -11.3, 0.5), 'thigh' + s);
+      add(bindBlend(th, I('thigh' + s), I('knee' + s), -9.2, -11.3, 0.5), 'thigh' + s);
       // Pantorrilla: gemelos (dos cabezas), tibia plana al frente, maléolos; media pintada
       const shinRings = [
-        { y: 0.6, rx: 1.62 * k, rz: 1.68 * k, cz: 0, f: shapeOf([[0, 0.5, 0.04]]) },
+        { y: 0.0, rx: 1.7 * k, rz: 1.76 * k, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },               // mismo anillo que el muslo (sin costura)
         { y: -1.5, rx: 1.78 * k, rz: 2.05 * k, cz: -0.38, f: shapeOf([[PI - 0.55, 0.55, 0.1], [0, 0.4, -0.04]]) },  // gemelos
         { y: -4.0, rx: 1.66 * k, rz: 1.92 * k, cz: -0.36, f: shapeOf([[PI - 0.5, 0.55, 0.08], [0, 0.35, -0.03]]) },
         { y: -6.5, rx: 1.3 * k, rz: 1.47 * k, cz: -0.2, f: shapeOf([[PI, 0.6, 0.04]]) },   // alto de la media
@@ -500,9 +649,9 @@
       const sh = tube(shinRings, { segs: 14, uv: uvReg(REG.shin) });
       rings.shin = { v: sh.userData.ringV, names: ['knee', 'calf', 'calf2', 'sockTop', 'sock', 'ankle', 'cap2'] };
       if (mir) mirrorX(sh);
-      add(bindBlend(sh, I('knee' + s), I('thigh' + s), -1.2, 0.6, 0.5), 'knee' + s);
+      add(bindBlend(sh, I('knee' + s), I('thigh' + s), -2.1, 0.0, 0.5), 'knee' + s);
       // Rótula: esfera en la articulación, ligeramente alargada (cubre el hueco al doblar)
-      add(jointSphere(1.66 * k, [0.5, 1 - (REG.shin[0] + 6) / ATLAS], I('knee' + s), 1.15), 'knee' + s);
+      add(jointSphere(1.52 * k, [0.5, 1 - (REG.shin[0] + 6) / ATLAS], I('knee' + s), 1.12), 'knee' + s); // solo asoma con la rodilla doblada
       // Zapatilla de básquet (caña alta): empeine, puntera redondeada, talón; suela aparte con labio
       const shoeRings = [
         cap(2.7, -1.2),
@@ -543,6 +692,9 @@
       add(bindTo(shoeAll, I('ankle' + s)), 'ankle' + s);
       // Brazo: deltoides exterior, bíceps al frente, tríceps atrás, codo
       const uaRings = [
+        cap(2.2, 0),                                                                                   // cierra el extremo (redondea el hombro)
+        { y: 2.05, rx: 0.7 * k, rz: 0.7 * k },
+        { y: 1.75, rx: 1.4 * k, rz: 1.38 * k, f: shapeOf([[OUT, 0.8, 0.05]]) },
         { y: 1.2, rx: 1.75 * k, rz: 1.7 * k, f: shapeOf([[OUT, 0.8, 0.06]]) },
         { y: 0.4, rx: 1.95 * k, rz: 1.88 * k, f: shapeOf([[OUT, 0.9, 0.12], [IN, 0.6, -0.06]]) },     // deltoides
         { y: -1.4, rx: 1.98 * k, rz: 1.92 * k, f: shapeOf([[OUT, 0.85, 0.1], [IN, 0.6, -0.05]]) },
@@ -602,55 +754,61 @@
     const r = rng(L.seed ^ 0x9e37);
     const noise = [];
     for (let i = 0; i < 400; i++) noise.push(r());
-    if (style === 'corto' || style === 'mono') {
-      // Casquete con volumen en la coronilla, mechones (ruido fino) y tupé al frente
-      const bump2 = (a, el, i, j) => 0.12 * Math.max(0, Math.cos(el * 1.4)) + 0.1 * Math.max(0, Math.cos(a)) * Math.pow(Math.max(0, Math.cos(el * 1.2)), 2) + 0.012 * noise[(i * 29 + j * 11) % 400] + 0.012 * Math.sin(a * 11 + el * 9);
-      hairPieces.push(hairCap(HEAD_C, HEAD_R, style === 'mono' ? 0.12 : 0.2, HAIRLINE_STD, bump2, hairReg, 30, 12));
-      if (style === 'mono') {
-        // Moño alto y atrás, con base ancha, visible de frente por encima de la coronilla
-        const bun = new T.SphereGeometry(1.5, 14, 10); bun.scale(1.1, 0.95, 1.0); bun.translate(0, 7.5 * HS, -1.1 * HS);
-        hairPieces.push(flatUV(bun, hairUV[0], hairUV[1]));
-        const base = new T.SphereGeometry(0.85, 9, 7); base.scale(1.4, 0.6, 1.1); base.translate(0, 6.7 * HS, -0.95 * HS);
-        hairPieces.push(flatUV(base, hairUV[0], hairUV[1]));
-        const band = new T.TorusGeometry(1.25, 0.16, 5, 16); band.rotateX(PI / 2); band.translate(0, 6.9 * HS, -1.05 * HS);
-        hairPieces.push(flatUV(band, swUV(SW.trim)[0], swUV(SW.trim)[1]));
-      }
+    const nz = (i, j) => noise[(i * 29 + j * 11) % 400];
+    if (style === 'corto') {
+      // Corto con degradado: los costados y la nuca van pintados al ras (fade); arriba un casquete
+      // con volumen que termina sobre las sienes, más alto al frente (jopo) y con mechones.
+      const th = (a, el, i, j) => { const e = el / HAIRLINE_TOP(a); return 0.1 * (1 - e * e) + 0.05 * G(a, 0.7) * (1 - e * e) * smooth(e * 3) + 0.012 * nz(i, j) + 0.008 * Math.sin(a * 13 + el * 11); };
+      const scalpUV = Object.assign({ ringV: rings.head.v }, uvReg(REG.head));
+      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.01, HAIRLINE_TOP, th, scalpUV, 40, 12));
+    } else if (style === 'mono') {
+      // Pelo tirante hacia atrás (casquete fino hasta la línea de pelo) y moño alto con base y gomita
+      const hl = (a) => HAIRLINE_STD(a) - 0.03;
+      const th = (a, el, i, j) => 0.018 + 0.03 * G(Math.abs(a) - PI, 1.2) * (1 - el / hl(a)) + 0.006 * nz(i, j);
+      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.012, hl, th, hairReg, 36, 12));
+      const c = onHead(0.62, PI, 1.0);
+      const nrm = new T.Vector3(0, Math.cos(0.62) / HEAD_R.y, -Math.sin(0.62) / HEAD_R.z).normalize();
+      const bun = new T.SphereGeometry(1.12, 14, 10); bun.scale(1.08, 0.92, 1.0);
+      const bc = c.clone().addScaledVector(nrm, 1.05); bun.translate(bc.x, bc.y, bc.z);
+      hairPieces.push(flatUV(bun, hairUV[0], hairUV[1]));
+      const band = new T.TorusGeometry(0.72, 0.14, 5, 16); band.lookAt(nrm); const kc = c.clone().addScaledVector(nrm, 0.3); band.translate(kc.x, kc.y, kc.z);
+      hairPieces.push(flatUV(band, swUV(SW.trim)[0], swUV(SW.trim)[1]));
     } else if (style === 'rapado') {
-      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.035, hairline(1.22, 1.5, 1.9), null, hairReg));
+      // Rapado: pelo al ras, solo pintado en el cuero cabelludo (sin volumen)
     } else if (style === 'rulos') {
-      // Afro: casquete grueso con ruido determinista y rizos sueltos
-      // Afro: masa redondeada y densa (casquete grueso con ruido fino) con la silueta esponjada
-      // por muchos rizos pequeños en el borde exterior
-      const bump2 = (a, el, i, j) => 0.3 + 0.11 * noise[(i * 31 + j * 7) % 400] + 0.05 * Math.sin(a * 9 + el * 7);
-      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.36, hairline(1.22, 1.6, 1.95), bump2, hairUV, 32, 14));
-      for (let i = 0; i < 48; i++) {
-        const a = -PI + r() * PI * 2, el = Math.pow(r(), 0.7) * (Math.abs(a) < 1.0 ? 1.1 : 1.5);
-        const sp = new T.SphereGeometry(0.55 + r() * 0.3, 6, 5);
-        const c = onHead(el, a, 1.4 + r() * 0.06); sp.translate(c.x, c.y, c.z);
-        hairPieces.push(flatUV(sp, hairUV[0], hairUV[1]));
+      // Rulos: volumen corto y redondeado (no un casco), con muchos rizos chicos que rompen la silueta
+      const hl = (a) => HAIRLINE_STD(a) - 0.05;
+      const thk = (a, el) => { const e = el / hl(a); return 0.17 * (1 - 0.55 * e * e) * (0.75 + 0.25 * G(a, 1.4)); };
+      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.02, hl, (a, el, i, j) => thk(a, el) + 0.03 * nz(i, j), hairUV, 36, 13));
+      for (let i = 0; i < 140; i++) {
+        const a = -PI + r() * PI * 2, el = Math.sqrt(r()) * (hl(a) - 0.06);
+        const rad = 0.24 + r() * 0.13;
+        const cg = new T.IcosahedronGeometry(rad, 0); cg.rotateX(r() * 3); cg.rotateY(r() * 3); cg.scale(1, 0.85, 1);
+        { const pp = cg.attributes.position, nn = cg.attributes.normal; for (let vi = 0; vi < pp.count; vi++) { const l = Math.hypot(pp.getX(vi), pp.getY(vi), pp.getZ(vi)) || 1; nn.setXYZ(vi, pp.getX(vi) / l, pp.getY(vi) / l, pp.getZ(vi) / l); } }
+        const c = onHead(el, a, 1 + thk(a, el) * 0.92); cg.translate(c.x, c.y, c.z);
+        hairPieces.push(flatUV(cg, hairUV[0], hairUV[1]));
       }
     } else if (style === 'trenzas') {
-      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.07, HAIRLINE_STD, null, hairReg));
+      hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.03, (a) => HAIRLINE_STD(a) - 0.02, null, hairReg, 36, 12));
       // Trenzas pegadas (cornrows): filas paralelas que siguen el cráneo de la frente a la nuca
       // y cuelgan por detrás hasta los hombros, con nudos (radio ondulado)
-      for (let i = 0; i < 7; i++) {
-        const xi = (i - 3) * 0.62 * HS;
-        const kk = 1.1, q = Math.sqrt(Math.max(0.05, 1 - (xi / (HEAD_R.x * kk)) * (xi / (HEAD_R.x * kk))));
+      for (let i = 0; i < 9; i++) {
+        const xi = (i - 4) * 0.47 * HS;
+        const kk = 1.045, q = Math.sqrt(Math.max(0.05, 1 - (xi / (HEAD_R.x * kk)) * (xi / (HEAD_R.x * kk))));
         const ry = HEAD_R.y * kk * q, rz = HEAD_R.z * kk * q;
-        const th0 = 1.22 + Math.abs(i - 3) * 0.06, th1 = -(PI - 1.4);
+        const th0 = HAIRLINE_STD(0) - 0.06 + Math.abs(i - 4) * 0.045, th1 = -(PI - 1.45);
         const pts = [];
         for (let kk2 = 0; kk2 <= 7; kk2++) {
           const th = lerp(th0, th1, kk2 / 7);
           pts.push(new T.Vector3(xi, HEAD_C.y + Math.cos(th) * ry, HEAD_C.z + Math.sin(th) * rz));
         }
         const last = pts[pts.length - 1];
-        const sxx = Math.sign(xi) * 0.35;
-        pts.push(new T.Vector3(last.x + sxx, last.y - 2.3, last.z - 0.3));
-        pts.push(new T.Vector3(last.x + sxx * 1.6, last.y - 4.8, last.z - 0.5));
-        const tb = new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'centripetal'), 30, 0.4, 6, false);
-        // nudos de la trenza: ondulación del radio a lo largo del tubo
+        const sxx = Math.sign(xi) * 0.3;
+        pts.push(new T.Vector3(last.x + sxx, last.y - 2.1, last.z - 0.35));
+        pts.push(new T.Vector3(last.x + sxx * 1.6, last.y - 4.4, last.z - 0.5));
+        const tb = new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'centripetal'), 28, 0.24, 6, false);
         const pp = tb.attributes.position, nn = tb.attributes.normal;
-        for (let vi = 0; vi < pp.count; vi++) { const seg = Math.floor(vi / 7); const kR = 1 + 0.18 * Math.sin(seg * 1.6 + i); pp.setXYZ(vi, pp.getX(vi) + nn.getX(vi) * 0.4 * (kR - 1), pp.getY(vi) + nn.getY(vi) * 0.4 * (kR - 1), pp.getZ(vi) + nn.getZ(vi) * 0.4 * (kR - 1)); }
+        for (let vi = 0; vi < pp.count; vi++) { const seg = Math.floor(vi / 7); const kR = 1 + 0.2 * Math.sin(seg * 1.7 + i); pp.setXYZ(vi, pp.getX(vi) + nn.getX(vi) * 0.24 * (kR - 1), pp.getY(vi) + nn.getY(vi) * 0.24 * (kR - 1), pp.getZ(vi) + nn.getZ(vi) * 0.24 * (kR - 1)); }
         hairPieces.push(flatUV(tb, hairUV[0], hairUV[1]));
       }
     }
@@ -660,8 +818,10 @@
     const acc = L.accessory;
     const trimUV = swUV(SW.trim), jerseyUV = swUV(SW.jersey);
     if (acc === 'vincha') {
-      const g = new T.TorusGeometry(2.4 * HS, 0.36, 7, 26);
-      g.rotateX(PI / 2); g.scale(1, 1, 1.17); g.translate(0, 4.95 * HS, -0.15 * HS);
+      // Vincha sobre la frente: sigue el cráneo a la altura y = 4,75 (más holgada sobre los rulos)
+      const sk = skullAt(4.75), extra = L.style === 'rulos' ? 0.3 : L.style === 'corto' ? 0.12 : 0.05;
+      const g = new T.TorusGeometry((sk.rx + 0.08 + extra) * HS, 0.3, 7, 30);
+      g.rotateX(PI / 2); g.scale(1, 1, (sk.rz + 0.08 + extra) / (sk.rx + 0.08 + extra)); g.translate(0, 4.75 * HS, sk.cz * HS);
       add(bindTo(flatUV(g, trimUV[0], trimUV[1]), I('head')), 'head');
     } else if (acc === 'manga') {
       // Manga de compresión en el brazo izquierdo (dos tubos con la misma musculatura)
@@ -716,175 +876,229 @@
     const row = (name) => rowOf(HR, hv[hn.indexOf(name)]);
     const yEyes = row('eyes'), yBrow = row('brow'), yMouth = row('mouth'), yNose = row('nose'), yChin = row('chin'), yJaw = row('jaw'), yForehead = row('forehead');
     const cx = W / 2;
-    const eyeRing = headRingsDef[hn.indexOf('eyes')];
-    const ppu = W / (Math.PI * (eyeRing.rx + eyeRing.rz)); // píxeles por unidad (horizontal) en los ojos
     const radial = (x, y, r0, r1, c0, a0, c1, a1) => { const gg = ctx.createRadialGradient(x, y, r0, x, y, r1); gg.addColorStop(0, rgba(c0, a0)); gg.addColorStop(1, rgba(c1, a1)); return gg; };
-    const blob = (x, y, rx, ry, color, a) => { ctx.save(); ctx.translate(x, y); ctx.scale(rx, ry); ctx.fillStyle = radial(0, 0, 0, 1, color, a, color, 0); ctx.beginPath(); ctx.arc(0, 0, 1, 0, PI * 2); ctx.fill(); ctx.restore(); };
+    const blob = (x, y, rx, ry, color, a) => { ctx.save(); ctx.translate(x, y); ctx.scale(Math.max(0.01, rx), Math.max(0.01, ry)); ctx.fillStyle = radial(0, 0, 0, 1, color, a, color, 0); ctx.beginPath(); ctx.arc(0, 0, 1, 0, PI * 2); ctx.fill(); ctx.restore(); };
+    // La cara se pinta en unidades reales de la cabeza (sin escalar, las mismas de faceDisp):
+    // x = a · 2,25 (arco desde el eje, + = izquierda del jugador) e y = altura local. Así lo pintado
+    // coincide con lo esculpido y la anisotropía del atlas (más píxeles a lo ancho) queda corregida.
+    const PX = W / (2 * PI * 2.25);
+    const X = (x) => cx + x * PX, Y = (y) => rowOf(HR, yToV(headRingsDef, hv, y * HS));
+    const ppv = (y) => (Y(y - 0.05) - Y(y + 0.05)) / 0.1;
+    const blobU = (x, y, rx, ry, color, a) => blob(X(x), Y(y), rx * PX, ry * ppv(y), color, a);
+    const ellU = (x, y, rx, ry, rot) => { ctx.beginPath(); ctx.ellipse(X(x), Y(y), rx * PX, ry * ppv(y), rot || 0, 0, PI * 2); };
+    // Trazo de puntos [x, y] o curvas [cx, cy, x, y] en unidades
+    const path = (pts, close) => { ctx.beginPath(); pts.forEach((p, i) => { if (p.length === 2) { if (i) ctx.lineTo(X(p[0]), Y(p[1])); else ctx.moveTo(X(p[0]), Y(p[1])); } else ctx.quadraticCurveTo(X(p[0]), Y(p[1]), X(p[2]), Y(p[3])); }); if (close) ctx.closePath(); };
+    const deep = mix(shade(skin, -0.5), '#3E1E16', 0.3);           // sombra cálida de cuencas y pliegues
+    const lum = luminance(skin);
     // Variación suave del tono de la piel (manchas tenues) y sombra bajo la mandíbula
-    for (let i = 0; i < 40; i++) blob(r() * W, HR[0] + r() * (HR[1] - HR[0]), 20 + r() * 40, 15 + r() * 30, i % 2 ? skinD : skinL, 0.07);
-    let g = ctx.createLinearGradient(0, yJaw, 0, HR[1]);
-    g.addColorStop(0, rgba(skinD, 0)); g.addColorStop(1, rgba(skinD, 0.6));
-    ctx.fillStyle = g; ctx.fillRect(0, yJaw, W, HR[1] - yJaw);
-    // Frente: brillo suave; sienes: sombra
-    blob(cx, yForehead + 10, 1.2 * ppu, 0.5 * ppu, skinL, 0.22);
-    for (const s of [-1, 1]) blob(cx + s * 1.9 * ppu, yBrow + 10, 0.5 * ppu, 0.8 * ppu, skinD, 0.2);
-    // Pómulos: luz sobre el hueso y sombra de contorno debajo; mejillas cálidas
-    const warm = mix(skin, '#C8463C', 0.25);
+    for (let i = 0; i < 40; i++) blob(r() * W, HR[0] + r() * (HR[1] - HR[0]), 20 + r() * 40, 8 + r() * 16, i % 2 ? skinD : skinL, 0.06);
+    let g = ctx.createLinearGradient(0, Y(0.9), 0, HR[1]);
+    g.addColorStop(0, rgba(skinD, 0)); g.addColorStop(1, rgba(skinD, 0.55));
+    ctx.fillStyle = g; ctx.fillRect(0, Y(0.9), W, HR[1] - Y(0.9));
+    // Frente con brillo suave, sienes en sombra
+    blobU(0, 4.75, 1.3, 0.55, skinL, 0.2);
+    for (const s of [-1, 1]) blobU(s * 2.55, 3.95, 0.45, 0.7, skinD, 0.16);
+    // Pómulos: luz sobre el hueso, sombra de contorno debajo, mejillas apenas cálidas
+    const warm = mix(skin, '#C04A3E', 0.22);
     for (const s of [-1, 1]) {
-      blob(cx + s * 1.25 * ppu, yNose - 4, 0.55 * ppu, 0.28 * ppu, skinL, 0.3);
-      blob(cx + s * 1.4 * ppu, (yNose + yMouth) / 2 + 4, 0.6 * ppu, 0.35 * ppu, skinD, 0.22);
-      blob(cx + s * 1.15 * ppu, (yNose + yMouth) / 2 - 2, 0.75 * ppu, 0.45 * ppu, warm, 0.4);
+      blobU(s * 1.6, 3.0, 0.55, 0.22, skinL, 0.24);
+      blobU(s * 1.95, 2.15, 0.55, 0.4, skinD, 0.16);
+      blobU(s * 1.3, 2.55, 0.6, 0.35, warm, 0.18);
     }
-    // Cuencas: sombra en el párpado superior y hacia el lagrimal
-    for (const s of [-1, 1]) blob(cx + s * 0.72 * ppu, yEyes - 2, 0.55 * ppu, 0.36 * ppu, skinD, 0.28);
-    // Nariz: sombra a ambos lados del puente, luz en el dorso, aletas y fosas, sombra debajo
-    for (const s of [-1, 1]) blob(cx + s * 0.3 * ppu, (yEyes + yNose) / 2, 0.16 * ppu, 0.5 * ppu, skinD, 0.35);
-    blob(cx, (yEyes + yNose) / 2, 0.07 * ppu, 0.45 * ppu, skinL, 0.35);
-    blob(cx, yNose + 8, 0.42 * ppu, 0.14 * ppu, skinD, 0.45);
-    ctx.fillStyle = rgba(shade(skin, -0.55), 0.8);
-    for (const s of [-1, 1]) { ctx.beginPath(); ctx.ellipse(cx + s * 0.2 * ppu, yNose + 3, 0.085 * ppu, 0.05 * ppu, s * 0.5, 0, PI * 2); ctx.fill(); }
-    // Ojos: almendra con párpado superior pesado, pestañas, cuenca, iris con gradiente, pupila, brillos
-    const ex = 0.72 * ppu, ew = 0.34 * ppu, eh = 0.145 * ppu;
-    const iris = ['#4A2A14', '#6B4524', '#3F6B4C', '#3D5E8F', '#2A1A10', '#7A6A3A'][L.seed % 6];
-    const lidDark = shade(skin, -0.62);
-    for (const s of [-1, 1]) {
-      const x = cx + s * ex, y = yEyes;
-      // contorno almendrado: arco superior alto, inferior más plano, lagrimal hacia el centro
-      const eyePath = () => { ctx.beginPath(); ctx.moveTo(x - s * ew, y + 1); ctx.quadraticCurveTo(x - s * ew * 0.35, y - eh * 1.75, x + s * ew * 0.3, y - eh * 1.2); ctx.quadraticCurveTo(x + s * ew * 0.95, y - eh * 0.6, x + s * ew, y - 2); ctx.quadraticCurveTo(x + s * ew * 0.5, y + eh * 1.1, x - s * ew * 0.2, y + eh * 0.95); ctx.quadraticCurveTo(x - s * ew * 0.85, y + eh * 0.8, x - s * ew, y + 1); ctx.closePath(); };
-      ctx.save(); eyePath(); ctx.clip();
-      g = ctx.createLinearGradient(0, y - eh * 1.6, 0, y + eh);
-      g.addColorStop(0, '#B9B4AC'); g.addColorStop(0.3, '#F4F2EE'); g.addColorStop(1, '#E6E1DA');
-      ctx.fillStyle = g; ctx.fillRect(x - ew - 2, y - eh * 2, ew * 2 + 4, eh * 3.2);
-      const ix = x - s * 0.04 * ppu, iy = y - 1, ir = 0.135 * ppu;
-      g = ctx.createRadialGradient(ix - ir * 0.2, iy - ir * 0.2, ir * 0.1, ix, iy, ir);
-      g.addColorStop(0, shade(iris, 0.35)); g.addColorStop(0.6, iris); g.addColorStop(0.9, shade(iris, -0.35)); g.addColorStop(1, shade(iris, -0.6));
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ix, iy, ir, 0, PI * 2); ctx.fill();
-      ctx.strokeStyle = rgba(shade(iris, 0.5), 0.35); ctx.lineWidth = 1.2;
-      for (let i = 0; i < 14; i++) { const a = i / 14 * PI * 2; ctx.beginPath(); ctx.moveTo(ix + Math.cos(a) * ir * 0.35, iy + Math.sin(a) * ir * 0.35); ctx.lineTo(ix + Math.cos(a) * ir * 0.85, iy + Math.sin(a) * ir * 0.85); ctx.stroke(); }
-      ctx.fillStyle = '#07050A'; ctx.beginPath(); ctx.arc(ix, iy, ir * 0.46, 0, PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.beginPath(); ctx.arc(ix - s * ir * 0.35, iy - ir * 0.4, ir * 0.26, 0, PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.beginPath(); ctx.arc(ix + s * ir * 0.3, iy + ir * 0.35, ir * 0.13, 0, PI * 2); ctx.fill();
-      // sombra del párpado superior sobre el globo
-      g = ctx.createLinearGradient(0, y - eh * 1.7, 0, y - eh * 0.1);
-      g.addColorStop(0, 'rgba(40,20,15,.55)'); g.addColorStop(1, 'rgba(40,20,15,0)');
-      ctx.fillStyle = g; ctx.fillRect(x - ew - 2, y - eh * 2, ew * 2 + 4, eh * 2);
+    // Barba de dos días (adulto): sombra tenue sobre mandíbula, mentón y bigote
+    const stubble = !L.beard && L.style !== 'mono' && (L.seed % 3) !== 0;
+    const beardPath = (k) => {
+      // contorno de la barba (tablas BEARD_TOP/BOT); k > 1 la agranda un poco (borde difuminado)
+      const pts = [];
+      const n = 36;
+      for (let i = 0; i <= n; i++) { const a = -BEARD_A + (2 * BEARD_A * i) / n; pts.push([a * 2.25, table(BEARD_TOP, Math.abs(a)) + (k - 1) * 0.6]); }
+      for (let i = n; i >= 0; i--) { const a = -BEARD_A + (2 * BEARD_A * i) / n; pts.push([a * 2.25, table(BEARD_BOT, Math.abs(a)) - (k - 1)]); }
+      path(pts, true);
+    };
+    if (stubble) {
+      const sc = mix(hair, shade(skin, -0.25), luminance(hair) > 0.45 ? 0.75 : 0.45);
+      ctx.save(); beardPath(1); ctx.clip();
+      ctx.fillStyle = rgba(sc, 0.14); ctx.fillRect(0, Y(3.6), W, HR[1] - Y(3.6));
+      ctx.fillStyle = rgba(sc, 0.22);
+      for (let i = 0; i < 900; i++) ctx.fillRect(X((r() - 0.5) * 6.8), Y(0.05 + r() * 3.3), 1.4, 1.4);
       ctx.restore();
-      // párpado superior: línea gruesa con pestañas hacia afuera; pliegue del párpado
-      ctx.strokeStyle = lidDark; ctx.lineWidth = 3.2; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(x - s * ew, y + 1); ctx.quadraticCurveTo(x - s * ew * 0.35, y - eh * 1.85, x + s * ew * 0.3, y - eh * 1.3); ctx.quadraticCurveTo(x + s * ew * 0.95, y - eh * 0.7, x + s * ew + s * 2, y - 2); ctx.stroke();
-      ctx.lineWidth = 2;
-      for (let i = 0; i < 3; i++) { const t = 0.65 + i * 0.14; const px = x + s * ew * t, py = y - eh * (1.35 - i * 0.3); ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + s * 3.5, py - 3.5); ctx.stroke(); }
-      ctx.strokeStyle = rgba(skinD, 0.55); ctx.lineWidth = 1.6;
-      ctx.beginPath(); ctx.moveTo(x - s * ew * 0.7, y - eh * 1.0); ctx.quadraticCurveTo(x, y - eh * 2.6, x + s * ew * 0.95, y - eh * 1.3); ctx.stroke();
-      // párpado inferior: línea fina oscura y luz debajo
-      ctx.strokeStyle = rgba(skinD, 0.7); ctx.lineWidth = 1.4;
-      ctx.beginPath(); ctx.moveTo(x + s * ew, y - 2); ctx.quadraticCurveTo(x + s * ew * 0.5, y + eh * 1.25, x - s * ew * 0.2, y + eh * 1.1); ctx.stroke();
-      ctx.strokeStyle = rgba(skinL, 0.5); ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(x + s * ew * 0.9, y + 1); ctx.quadraticCurveTo(x + s * ew * 0.5, y + eh * 1.6, x - s * ew * 0.2, y + eh * 1.5); ctx.stroke();
+      ctx.fillStyle = rgba(sc, 0.16); path([[-0.62, 1.72], [-0.3, 2.02, 0, 1.98], [0.3, 2.02, 0.62, 1.72], [0, 1.76, -0.62, 1.72]], true); ctx.fill();
     }
-    // Cejas: forma rellena con cabeza gruesa cerca del entrecejo y cola fina (rival: fruncidas, bajas)
-    const browColor = shade(hair, 0.02);
+    // Cuencas: sombra profunda bajo el arco superciliar y hacia el lagrimal
     for (const s of [-1, 1]) {
-      const x = cx + s * ex, y = yBrow + 2;
-      const inner = rival ? 12 : 0, tilt = rival ? -5 : 0;
-      ctx.fillStyle = browColor;
-      ctx.beginPath();
-      ctx.moveTo(x - s * ew * 0.95, y + inner + 1);
-      ctx.quadraticCurveTo(x - s * ew * 0.2, y - 9 + tilt, x + s * ew * 0.45, y - 8 + tilt);
-      ctx.quadraticCurveTo(x + s * ew * 1.0, y - 5 + tilt, x + s * ew * 1.25, y - 1 + tilt);
-      ctx.quadraticCurveTo(x + s * ew * 0.95, y - 1 + tilt, x + s * ew * 0.45, y - 3 + tilt);
-      ctx.quadraticCurveTo(x - s * ew * 0.2, y - 2 + tilt, x - s * ew * 0.95, y + inner + (rival ? 8 : 6));
-      ctx.closePath(); ctx.fill();
-      // pelos sueltos en el borde superior
-      ctx.strokeStyle = rgba(browColor, 0.7); ctx.lineWidth = 1.2;
-      for (let i = 0; i < 7; i++) { const t = -0.8 + i * 0.28; const px = x + s * ew * t, py = y - 7 + tilt + Math.abs(t) * 3; ctx.beginPath(); ctx.moveTo(px, py + 2); ctx.lineTo(px + s * 2, py - 3); ctx.stroke(); }
+      blobU(s * 0.86, 3.6, 0.66, 0.34, deep, 0.36);
+      blobU(s * 0.42, 3.5, 0.2, 0.22, deep, 0.28);
+      blobU(s * 0.88, 3.28, 0.42, 0.1, deep, 0.16);        // ojera
     }
-    if (rival) { // arrugas del entrecejo y sombra: concentración
-      ctx.strokeStyle = rgba(skinD, 0.8); ctx.lineWidth = 2.5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(cx - 6, yBrow + 10); ctx.lineTo(cx - 4, yBrow - 14); ctx.moveTo(cx + 6, yBrow + 10); ctx.lineTo(cx + 4, yBrow - 14); ctx.stroke();
-      blob(cx, yBrow + 4, 0.45 * ppu, 0.4 * ppu, skinD, 0.35);
+    // Ojos: almendra de 0,8 × 0,26 u (3 × 1 cm), canto externo apenas más alto, iris tapado por los
+    // párpados, esclera en sombra arriba, pliegue del párpado y línea de pestañas finas.
+    const iris = ['#3B2312', '#56381E', '#3D5A40', '#3F5672', '#21140C', '#5E5232'][L.seed % 6];
+    const lidDark = mix(shade(skin, -0.7), '#120806', 0.4);
+    const eh = rival ? 0.105 : 0.138;   // medio alto de la abertura (el rival entorna los ojos)
+    for (const s of [-1, 1]) {
+      const xi = s * 0.44, xo = s * 1.24, yc = 3.5;
+      const up = [[xi, yc - 0.005], [s * 0.78, yc + eh * 2.05, xo, yc + 0.03]];
+      const lo = [[s * 0.95, yc - 0.2, xi, yc - 0.005]];
+      // piel del párpado superior apenas más oscura
+      ctx.fillStyle = rgba(deep, 0.22); path([[xi, yc], [s * 0.8, yc + eh * 2 + 0.34, xo + s * 0.04, yc + 0.04], [s * 0.8, yc + eh * 2.05, xi, yc]], true); ctx.fill();
+      ctx.save(); path(up.concat(lo), true); ctx.clip();
+      const scl = mix('#E6E0D8', skin, 0.22);
+      g = ctx.createLinearGradient(0, Y(yc + eh), 0, Y(yc - eh));
+      g.addColorStop(0, mix(scl, deep, 0.4)); g.addColorStop(0.4, scl); g.addColorStop(1, mix(scl, skin, 0.15));
+      ctx.fillStyle = g; ctx.fillRect(X(-1.4) , Y(yc + 0.3), X(1.4) - X(-1.4), Y(yc - 0.3) - Y(yc + 0.3));
+      // rincones más oscuros
+      blobU(xi, yc, 0.14, 0.12, mix(scl, '#B07060', 0.5), 0.7);
+      blobU(xo, yc + 0.03, 0.16, 0.12, deep, 0.45);
+      const ix = s * 0.82, iy = yc + 0.005, ir = 0.155;
+      ctx.fillStyle = shade(iris, -0.45); ellU(ix, iy, ir, ir); ctx.fill();
+      g = ctx.createRadialGradient(X(ix), Y(iy), 0, X(ix), Y(iy), ir * PX * 0.92);
+      g.addColorStop(0, shade(iris, 0.25)); g.addColorStop(0.55, iris); g.addColorStop(1, shade(iris, -0.3));
+      ctx.save(); ctx.translate(X(ix), Y(iy)); ctx.scale(1, ppv(iy) / PX); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, ir * PX * 0.9, 0, PI * 2); ctx.fill(); ctx.restore();
+      ctx.fillStyle = '#060406'; ellU(ix, iy, 0.062, 0.062); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.85)'; ellU(ix - s * 0.05, iy + 0.05, 0.03, 0.03); ctx.fill();
+      // sombra del párpado sobre el globo
+      g = ctx.createLinearGradient(0, Y(yc + eh * 1.1), 0, Y(yc + eh * 0.1));
+      g.addColorStop(0, rgba('#1A0C08', 0.45)); g.addColorStop(1, rgba('#1A0C08', 0));
+      ctx.fillStyle = g; ctx.fillRect(X(-1.4), Y(yc + eh * 1.2), X(1.4) - X(-1.4), Y(yc) - Y(yc + eh * 1.2));
+      ctx.restore();
+      // línea de pestañas superior (más gruesa hacia afuera) y pliegue del párpado
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = rgba(lidDark, 0.95); ctx.lineWidth = 2.2; path(up); ctx.stroke();
+      ctx.lineWidth = 3; path([[s * 0.85, yc + eh * 1.55], [s * 1.08, yc + eh * 1.2, xo + s * 0.04, yc + 0.035]]); ctx.stroke();
+      ctx.strokeStyle = rgba(deep, 0.5); ctx.lineWidth = 1.6;
+      path([[s * 0.5, yc + 0.06], [s * 0.82, yc + eh * 2 + 0.3, s * 1.22, yc + 0.1]]); ctx.stroke();
+      // párpado inferior: línea fina y luz debajo
+      ctx.strokeStyle = rgba(deep, 0.55); ctx.lineWidth = 1.1; path([[xo, yc + 0.03], [s * 0.95, yc - 0.2, xi, yc - 0.005]]); ctx.stroke();
+      ctx.strokeStyle = rgba(skinL, 0.35); ctx.lineWidth = 1.4; path([[xo - s * 0.06, yc - 0.03], [s * 0.95, yc - 0.27, xi + s * 0.06, yc - 0.06]]); ctx.stroke();
     }
-    // Boca: labio superior oscuro con arco de cupido, inferior más claro con brillo, comisuras
-    const mw = 0.48 * ppu, my = yMouth + 2;
-    const lipDark = mix(shade(skin, -0.35), '#8E3A3A', 0.45), lipLight = mix(shade(skin, -0.08), '#B5524E', 0.4);
-    const smile = rival ? -2 : 4;
-    ctx.fillStyle = rgba(lipDark, 0.9);
-    ctx.beginPath(); ctx.moveTo(cx - mw, my); ctx.quadraticCurveTo(cx - mw * 0.5, my - 7, cx - mw * 0.15, my - 5); ctx.quadraticCurveTo(cx, my - 3, cx + mw * 0.15, my - 5); ctx.quadraticCurveTo(cx + mw * 0.5, my - 7, cx + mw, my); ctx.quadraticCurveTo(cx, my + 2 + smile * 0.3, cx - mw, my); ctx.fill();
-    ctx.fillStyle = rgba(lipLight, 0.85);
-    ctx.beginPath(); ctx.moveTo(cx - mw * 0.9, my + 1); ctx.quadraticCurveTo(cx, my + 12 + smile, cx + mw * 0.9, my + 1); ctx.quadraticCurveTo(cx, my + 3 + smile * 0.3, cx - mw * 0.9, my + 1); ctx.fill();
-    blob(cx, my + 6 + smile * 0.5, mw * 0.35, 3, skinL, 0.35);
-    ctx.strokeStyle = rgba(shade(skin, -0.6), 0.9); ctx.lineWidth = 2.2; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(cx - mw, my - (rival ? -1 : 1)); ctx.quadraticCurveTo(cx, my + (rival ? 1 : 4), cx + mw, my - (rival ? -1 : 1)); ctx.stroke();
-    for (const s of [-1, 1]) blob(cx + s * mw * 1.05, my + 1, 4, 3, skinD, 0.5);
-    blob(cx, my + 14 + smile, mw * 0.8, 5, skinD, 0.3);       // sombra bajo el labio inferior
-    blob(cx, my - 12, 0.12 * ppu, 6, skinL, 0.25);              // filtro
-    blob(cx, yChin - 6, 0.5 * ppu, 0.25 * ppu, skinL, 0.22);     // luz del mentón
-    // Barba corta con volumen pintado: mandíbula, mentón y bigote, con grano y bordes difuminados
+    // Cejas: cabeza ancha junto al entrecejo, arco y cola fina; pegadas al arco superciliar.
+    // Rival: cabeza más baja y junta (ceño de concentración).
+    const browC = luminance(hair) > 0.5 ? mix(hair, '#4A3A28', 0.45) : mix(shade(hair, -0.05), skin, 0.18);
+    for (const s of [-1, 1]) {
+      const yi = rival ? 3.8 : 3.86, xIn = rival ? 0.3 : 0.34, yPk = rival ? 3.99 : 4.03;
+      ctx.fillStyle = rgba(browC, 0.92);
+      path([[s * xIn, yi - 0.06], [s * 0.6, yi + 0.12, s * 0.98, yPk], [s * 1.25, yPk - 0.03, s * 1.42, 3.88], [s * 1.2, yPk - 0.08, s * 0.95, yPk - 0.08], [s * 0.6, yi - 0.03, s * xIn, yi - 0.06]], true);
+      ctx.fill();
+      // pelos: trazos cortos inclinados hacia afuera y arriba
+      ctx.strokeStyle = rgba(browC, 0.6); ctx.lineWidth = 1;
+      for (let i = 0; i < 16; i++) {
+        const t = i / 15, bx = lerp(xIn + 0.02, 1.35, t), by = lerp(yi + 0.02, 3.92, t) + (t < 0.6 ? 0.1 * Math.sin(t / 0.6 * PI / 2) : 0.1 - (t - 0.6) * 0.2);
+        ctx.beginPath(); ctx.moveTo(X(s * bx), Y(by - 0.05)); ctx.lineTo(X(s * (bx + 0.09)), Y(by + 0.05)); ctx.stroke();
+      }
+    }
+    if (rival) { // entrecejo: dos pliegues verticales y sombra
+      ctx.strokeStyle = rgba(deep, 0.45); ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+      for (const s of [-1, 1]) { path([[s * 0.12, 3.78], [s * 0.16, 3.9, s * 0.13, 4.02]]); ctx.stroke(); }
+      blobU(0, 3.84, 0.3, 0.12, deep, 0.22);
+    }
+    // Nariz: sombras a los lados del puente, luz en el dorso y la punta, aletas, fosas y sombra debajo
+    for (const s of [-1, 1]) blobU(s * 0.36, 2.95, 0.16, 0.6, skinD, 0.2);
+    blobU(0, 2.95, 0.08, 0.55, skinL, 0.22);
+    blobU(0, 2.4, 0.14, 0.1, skinL, 0.28);
+    blobU(0, 2.02, 0.38, 0.07, deep, 0.4);
+    ctx.fillStyle = rgba(mix(shade(skin, -0.65), '#1A0A06', 0.3), 0.9);
+    for (const s of [-1, 1]) { ellU(s * 0.2, 2.11, 0.11, 0.045, s * 0.35); ctx.fill(); }
+    ctx.strokeStyle = rgba(deep, 0.42); ctx.lineWidth = 1.5;
+    for (const s of [-1, 1]) { path([[s * 0.3, 2.4], [s * 0.6, 2.35, s * 0.5, 2.1]]); ctx.stroke(); }
+    // Surcos nasogenianos y filtro
+    ctx.strokeStyle = rgba(deep, lum > 0.5 ? 0.08 : 0.12); ctx.lineWidth = 3;
+    for (const s of [-1, 1]) { path([[s * 0.55, 2.12], [s * 0.82, 1.85, s * 0.8, 1.55]]); ctx.stroke(); }
+    blobU(0, 1.85, 0.07, 0.13, skinD, 0.14);
+    for (const s of [-1, 1]) blobU(s * 0.11, 1.86, 0.04, 0.12, skinL, 0.2);
+    // Boca: labio superior más oscuro con arco de cupido, inferior más lleno con brillo, comisuras.
+    const mw = rival ? 0.57 : 0.6, cy0 = 1.555, lift = rival ? -0.01 : 0.02;
+    const lipUp = mix(shade(skin, -0.3), '#7E3436', lum > 0.5 ? 0.36 : 0.22), lipLo = mix(shade(skin, -0.14), '#A0504A', lum > 0.5 ? 0.36 : 0.2);
+    ctx.fillStyle = rgba(lipUp, 0.85);
+    path([[-mw, cy0 + lift], [-0.32, 1.66, -0.09, 1.7], [0, 1.67], [0.09, 1.7], [0.32, 1.66, mw, cy0 + lift], [0, cy0 - 0.03, -mw, cy0 + lift]], true); ctx.fill();
+    ctx.fillStyle = rgba(lipLo, 0.8);
+    path([[-mw * 0.88, cy0], [0, 1.24, mw * 0.88, cy0], [0, cy0 - 0.025, -mw * 0.88, cy0]], true); ctx.fill();
+    blobU(0, 1.44, 0.24, 0.04, skinL, 0.32);
+    ctx.strokeStyle = rgba(mix(shade(skin, -0.7), '#1A0808', 0.3), 0.9); ctx.lineWidth = 1.8;
+    path([[-mw, cy0 + lift], [0, cy0 - 0.03, mw, cy0 + lift]]); ctx.stroke();
+    for (const s of [-1, 1]) blobU(s * mw * 1.02, cy0 + lift, 0.07, 0.05, deep, 0.45);
+    blobU(0, 1.24, 0.42, 0.07, deep, 0.28);                         // sombra bajo el labio inferior
+    blobU(0, 0.62, 0.5, 0.2, skinL, 0.2);                           // luz del mentón
+    // Barba recortada: rellena la región de la cáscara, con vello en trazos, bigote y borde difuminado
     if (L.beard) {
-      ctx.save();
-      ctx.beginPath();
-      const bw = 2.55 * ppu;
-      ctx.moveTo(cx - bw, yEyes + 6);
-      ctx.quadraticCurveTo(cx - bw * 1.05, yMouth + 10, cx - bw * 0.55, yChin + 18);
-      ctx.quadraticCurveTo(cx, yChin + 36, cx + bw * 0.55, yChin + 18);
-      ctx.quadraticCurveTo(cx + bw * 1.05, yMouth + 10, cx + bw, yEyes + 6);
-      ctx.lineTo(cx + bw - 0.25 * ppu, yEyes + 6);
-      ctx.quadraticCurveTo(cx + bw * 0.75, yMouth, cx + mw * 1.35, yMouth - 12);
-      ctx.lineTo(cx - mw * 1.35, yMouth - 12);
-      ctx.quadraticCurveTo(cx - bw * 0.75, yMouth, cx - bw + 0.25 * ppu, yEyes + 6);
-      ctx.closePath();
-      ctx.fillStyle = rgba(hair, 0.78); ctx.fill();
-      ctx.clip();
-      ctx.fillStyle = rgba(hair, 0.9);
-      ctx.beginPath(); ctx.ellipse(cx, yMouth - 9, mw * 1.3, 7, 0, 0, PI * 2); ctx.fill();
-      // vello: trazos cortos en direcciones variadas y puntos de piel que asoman
-      ctx.strokeStyle = rgba(shade(hair, 0.25), 0.5); ctx.lineWidth = 1.2;
-      for (let i = 0; i < 700; i++) { const x = cx - bw + r() * bw * 2, y = yEyes + r() * (yChin + 40 - yEyes); const a = PI / 2 + (r() - 0.5) * 1.2; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * 4, y + Math.sin(a) * 4); ctx.stroke(); }
-      ctx.fillStyle = rgba(skin, 0.3);
-      for (let i = 0; i < 500; i++) ctx.fillRect(cx - bw + r() * bw * 2, yEyes + r() * (yChin + 40 - yEyes), 1.5, 1.5);
-      // luz en el mentón y sombra bajo el labio para que la barba tenga volumen
-      blob(cx, yChin + 8, 0.6 * ppu, 0.3 * ppu, shade(hair, 0.35), 0.3);
+      const bc = luminance(hair) > 0.5 ? mix(hair, '#5A4530', 0.3) : hair;
+      ctx.save(); beardPath(1.06); ctx.clip();
+      ctx.fillStyle = rgba(bc, 0.35); ctx.fillRect(0, Y(3.8), W, HR[1] - Y(3.8));
       ctx.restore();
-      ctx.strokeStyle = rgba(shade(skin, -0.6), 0.9); ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.moveTo(cx - mw, my); ctx.quadraticCurveTo(cx, my + (rival ? 1 : 4), cx + mw, my); ctx.stroke();
+      ctx.save(); beardPath(1); ctx.clip();
+      ctx.fillStyle = rgba(bc, 0.86); ctx.fillRect(0, Y(3.8), W, HR[1] - Y(3.8));
+      ctx.strokeStyle = rgba(shade(bc, 0.3), 0.45); ctx.lineWidth = 1.1;
+      for (let i = 0; i < 900; i++) { const x = (r() - 0.5) * 6.9, y = 0.05 + r() * 3.4; const a = PI / 2 + (r() - 0.5) * 0.9 + x * 0.12; ctx.beginPath(); ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x) + Math.cos(a) * 3, Y(y) + Math.sin(a) * 4); ctx.stroke(); }
+      ctx.fillStyle = rgba(shade(bc, -0.4), 0.35);
+      for (let i = 0; i < 500; i++) ctx.fillRect(X((r() - 0.5) * 6.9), Y(0.05 + r() * 3.4), 1.5, 1.5);
+      blobU(0, 0.75, 0.6, 0.3, shade(bc, 0.35), 0.22);
+      ctx.restore();
+      // bigote que baja por las comisuras hasta la barba
+      ctx.fillStyle = rgba(bc, 0.88);
+      path([[-0.7, 1.42], [-0.72, 1.66, -0.5, 1.8], [-0.25, 1.98, 0, 1.95], [0.25, 1.98, 0.5, 1.8], [0.72, 1.66, 0.7, 1.42], [0.66, 1.42], [0.56, 1.62, 0.3, 1.71], [0, 1.73], [-0.3, 1.71], [-0.56, 1.62, -0.66, 1.42]], true);
+      ctx.fill();
+      ctx.strokeStyle = rgba(shade(bc, 0.25), 0.4); ctx.lineWidth = 1;
+      for (let i = 0; i < 60; i++) { const x = (r() - 0.5) * 1.3, y = 1.72 + r() * 0.22; ctx.beginPath(); ctx.moveTo(X(x), Y(y)); ctx.lineTo(X(x) + Math.sign(x) * 2, Y(y) + 3); ctx.stroke(); }
+      // la boca se vuelve a marcar encima
+      ctx.strokeStyle = rgba(mix(shade(skin, -0.7), '#1A0808', 0.3), 0.9); ctx.lineWidth = 1.8;
+      path([[-mw, cy0 + lift], [0, cy0 - 0.03, mw, cy0 + lift]]); ctx.stroke();
     }
-    // Cuero cabelludo: encima de la línea de pelo (polígono suave), patillas afinadas
+    // Cuero cabelludo y línea de pelo según el peinado (pintado por columnas: u = ángulo)
     const style = L.style;
-    const scalpColor = style === 'pelado' ? skin : style === 'rapado' ? mix(hair, skin, 0.42) : shade(hair, -0.05);
+    const elY = (el) => Y(SKULL_C.y + Math.cos(el) * SKULL_R.y);   // fila de una elevación del cráneo
+    const NC = 384, cw = W / NC + 1;
+    const colA = (i) => ((i + 0.5) / NC - 0.5) * PI * 2;
     if (style !== 'pelado') {
-      const hl = style === 'rapado' ? hairline(1.22, 1.5, 1.9) : style === 'rulos' ? hairline(1.22, 1.58, 1.95) : HAIRLINE_STD;
-      ctx.fillStyle = scalpColor;
-      ctx.beginPath(); ctx.moveTo(0, HR[0]);
-      const N = 96;
-      for (let i = 0; i <= N; i++) {
-        const u = i / N, a = (u - 0.5) * Math.PI * 2;
-        const yLocal = HEAD_C.y + Math.cos(hl(a) + 0.03) * HEAD_R.y;
-        const v = yToV(headRingsDef, hv, yLocal);
-        ctx.lineTo(u * W, rowOf(HR, v));
+      const hairD = shade(hair, -0.06);
+      for (let i = 0; i < NC; i++) {
+        const a = colA(i), x0 = (i / NC) * W, full = HAIRLINE_STD(a);
+        if (style === 'corto') {
+          // Degradado: arriba el color del pelo; en costados y nuca se aclara hacia la piel (máquina)
+          const top = HAIRLINE_TOP(a) - 0.04, fk = smooth((Math.abs(a) - 0.75) / 0.45);
+          ctx.fillStyle = hairD; ctx.fillRect(x0, HR[0], cw, elY(top) - HR[0] + 1);
+          const B = 10;
+          for (let k = 0; k < B; k++) {
+            const e0 = lerp(top, full, k / B), e1 = lerp(top, full, (k + 1) / B);
+            ctx.fillStyle = mix(hairD, mix(skin, hair, 0.18), fk * (0.12 + 0.62 * ((k + 0.5) / B)));
+            ctx.fillRect(x0, elY(e0), cw, elY(e1) - elY(e0) + 1);
+          }
+        } else {
+          ctx.fillStyle = style === 'rapado' ? mix(hair, skin, 0.42) : hairD;
+          ctx.fillRect(x0, HR[0], cw, elY(full) - HR[0] + 1);
+        }
       }
-      ctx.lineTo(W, HR[0]); ctx.closePath(); ctx.fill();
-      // sombra fina bajo la línea de pelo (da volumen al casquete)
-      ctx.strokeStyle = rgba(skinD, style === 'rapado' ? 0.25 : 0.45); ctx.lineWidth = 4;
+      if (style === 'corto') {
+        // Arriba: mechones cortos peinados hacia atrás y arriba, con luces y sombras (lo ve el casquete)
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 2200; i++) {
+          const a = (r() - 0.5) * PI * 2, el = r() * (HAIRLINE_TOP(a) - 0.02), px = (a / (PI * 2) + 0.5) * W, py = elY(el);
+          const l = 3 + r() * 5, dir = -PI / 2 + (r() - 0.5) * 0.9 + Math.sin(a) * 0.5;
+          ctx.strokeStyle = rgba(r() < 0.62 ? shade(hair, -0.5) : shade(hair, 0.42), 0.2 + r() * 0.3); ctx.lineWidth = 1 + r() * 1.6;
+          ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + Math.cos(dir) * l * 0.6, py + Math.sin(dir) * l); ctx.stroke();
+        }
+      }
+      // Textura del pelo corto: puntitos del color del pelo (más densos arriba)
+      ctx.fillStyle = rgba(shade(hair, -0.2), style === 'rapado' ? 0.45 : 0.3);
+      for (let i = 0; i < 2600; i++) {
+        const a = (r() - 0.5) * PI * 2, el = r() * HAIRLINE_STD(a);
+        ctx.fillRect((a / (PI * 2) + 0.5) * W, elY(el), 1.3, 1.3);
+      }
+      // Borde de la línea de pelo: pelitos cortos que bajan y sombra fina debajo (no un corte recto)
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 420; i++) {
+        const a = (r() - 0.5) * PI * 2, el = HAIRLINE_STD(a), py = elY(el), px = (a / (PI * 2) + 0.5) * W;
+        const fk = style === 'corto' ? smooth((Math.abs(a) - 0.75) / 0.45) : 0;
+        ctx.strokeStyle = rgba(mix(hairD, skin, style === 'rapado' ? 0.45 : 0.1 + fk * 0.6), 0.55);
+        ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(px, py - 2); ctx.lineTo(px + (r() - 0.5) * 3, py + 2 + r() * 3); ctx.stroke();
+      }
+      ctx.strokeStyle = rgba(skinD, 0.18); ctx.lineWidth = 3;
       ctx.beginPath();
-      for (let i = 0; i <= N; i++) {
-        const u = i / N, a = (u - 0.5) * Math.PI * 2;
-        const yLocal = HEAD_C.y + Math.cos(hl(a) + 0.03) * HEAD_R.y;
-        const py = rowOf(HR, yToV(headRingsDef, hv, yLocal)) + 2;
-        if (i) ctx.lineTo(u * W, py); else ctx.moveTo(u * W, py);
-      }
+      for (let i = 0; i <= NC; i++) { const a = ((i / NC) - 0.5) * PI * 2, py = elY(HAIRLINE_STD(a)) + 3; if (i) ctx.lineTo((i / NC) * W, py); else ctx.moveTo(0, py); }
       ctx.stroke();
-      // Patillas: franja que se afina desde la línea de pelo hasta la altura de los ojos, delante de la oreja
-      ctx.fillStyle = rgba(scalpColor, style === 'rapado' ? 0.75 : 0.95);
-      for (const s of [-1, 1]) {
-        const x = cx + s * 0.185 * W;
-        const aTop = (0.185 * s) * Math.PI * 2;
-        const yTop = rowOf(HR, yToV(headRingsDef, hv, HEAD_C.y + Math.cos(hl(aTop)) * HEAD_R.y)) - 2;
-        ctx.beginPath(); ctx.moveTo(x - 9, yTop); ctx.lineTo(x + 9, yTop); ctx.lineTo(x + 3 + s * 2, yEyes + 10); ctx.lineTo(x - 3 + s * 2, yEyes + 10); ctx.closePath(); ctx.fill();
-      }
     } else {
-      g = ctx.createRadialGradient(cx, HR[0] + 40, 5, cx, HR[0] + 40, 160);
-      g.addColorStop(0, rgba(skinL, 0.5)); g.addColorStop(1, rgba(skinL, 0));
-      ctx.fillStyle = g; ctx.fillRect(0, HR[0], W, yForehead - HR[0]);
+      // Pelado: brillo de la calva y una sombra apenas azulada de pelo afeitado a los costados
+      g = ctx.createRadialGradient(cx, HR[0] + 30, 5, cx, HR[0] + 30, 170);
+      g.addColorStop(0, rgba(skinL, 0.45)); g.addColorStop(1, rgba(skinL, 0));
+      ctx.fillStyle = g; ctx.fillRect(0, HR[0], W, Y(4.95) - HR[0]);
     }
 
     // ---------- Tronco: camiseta sin mangas con vivos, número grande y nombre
@@ -927,6 +1141,8 @@
       scoop(0, back.hw + d, topY, back.depth + d, color); scoop(W, back.hw + d, topY, back.depth + d, color);
       scoop(W * 0.25, hole.hw + d, topY, hole.depth + d, color); scoop(W * 0.75, hole.hw + d, topY, hole.depth + d, color);
     }
+    // tapa la fila del borde superior de los escotes (el antialias dejaba una línea clara alrededor del cuello)
+    ctx.fillStyle = skin; ctx.fillRect(0, topY - 4, W, 5);
     g = ctx.createLinearGradient(0, yShTop, 0, yShTop + 40);
     g.addColorStop(0, rgba(skinD, 0.35)); g.addColorStop(1, rgba(skinD, 0));
     ctx.save(); ctx.beginPath(); ctx.rect(0, yShTop, W, 60); ctx.clip();
@@ -1055,18 +1271,27 @@
     ctx.fillStyle = '#C9C4B8'; ctx.fillRect(0, SO[0], W * 0.12, SO[1] - SO[0]); ctx.fillRect(W * 0.88, SO[0], W * 0.12, SO[1] - SO[0]);
     ctx.fillStyle = '#A9A49A'; for (let y = SO[0] + 2; y < SO[1]; y += 4) { ctx.fillRect(0, y, W * 0.12, 1); ctx.fillRect(W * 0.88, y, W * 0.12, 1); }
 
-    // ---------- Pelo: mechones (vetas verticales claras y oscuras sobre el color base)
-    const HREG = REG.hair;
+    // ---------- Pelo: textura según el peinado (u = ángulo, v = de la coronilla al borde)
+    const HREG = REG.hair, hh = HREG[1] - HREG[0];
     const hairBase = style === 'rapado' ? mix(hair, skin, 0.3) : hair;
-    ctx.fillStyle = hairBase; ctx.fillRect(0, HREG[0], W, HREG[1] - HREG[0]);
-    for (let i = 0; i < 420; i++) {
-      const x = r() * W, w = 1 + r() * 2.5, a = 0.12 + r() * 0.3;
-      ctx.fillStyle = rgba(i % 3 ? shade(hair, -0.45) : shade(hair, 0.35), a);
-      ctx.fillRect(x, HREG[0], w, HREG[1] - HREG[0]);
+    ctx.fillStyle = hairBase; ctx.fillRect(0, HREG[0], W, hh);
+    if (style === 'corto' || style === 'rulos') {
+      // corto: mechones cortos y apelmazados (no vetas largas que converjan en la coronilla)
+      for (let i = 0; i < 1500; i++) {
+        const x = r() * W, y = HREG[0] + r() * hh, l = 3 + r() * 6, a = (r() - 0.5) * (style === 'rulos' ? 6 : 1.2);
+        ctx.strokeStyle = rgba(i % 3 ? shade(hair, -0.45) : shade(hair, 0.38), 0.18 + r() * 0.25); ctx.lineWidth = 1 + r() * 1.5;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.sin(a) * l, y + Math.cos(a) * l * 0.5); ctx.stroke();
+      }
+    } else {
+      for (let i = 0; i < 420; i++) {
+        const x = r() * W, w = 1 + r() * 2.5, a = 0.12 + r() * 0.3;
+        ctx.fillStyle = rgba(i % 3 ? shade(hair, -0.45) : shade(hair, 0.35), a);
+        ctx.fillRect(x, HREG[0], w, hh);
+      }
     }
     g = ctx.createLinearGradient(0, HREG[0], 0, HREG[1]);
-    g.addColorStop(0, rgba(shade(hair, 0.3), 0.25)); g.addColorStop(0.5, rgba(hair, 0)); g.addColorStop(1, rgba(shade(hair, -0.4), 0.35));
-    ctx.fillStyle = g; ctx.fillRect(0, HREG[0], W, HREG[1] - HREG[0]);
+    g.addColorStop(0, rgba(shade(hair, 0.3), 0.2)); g.addColorStop(0.5, rgba(hair, 0)); g.addColorStop(1, rgba(shade(hair, -0.4), 0.3));
+    ctx.fillStyle = g; ctx.fillRect(0, HREG[0], W, hh);
     // ---------- Muestras
     const sw = (s, color) => { ctx.fillStyle = color; ctx.fillRect(s[0], s[2], s[1] - s[0], s[3] - s[2]); };
     sw(SW.upperArm, skin); sw(SW.forearm, skin); sw(SW.hand, skin);

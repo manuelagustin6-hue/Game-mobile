@@ -6,12 +6,18 @@
  * THREE.Bone (cadera → columna → pecho → cuello → cabeza; pecho → hombro → codo → muñeca;
  * cadera → muslo → rodilla → tobillo). Toda la ropa, la piel, la cara y el número viven en un atlas
  * de textura de canvas (1024 × 1024) por aspecto (con caché), más un mapa de rugosidad.
- * Pesos de piel mezclados en codos, rodillas y cuello + esferas en las articulaciones.
+ * Codos y rodillas rígidos con una esfera al ras (giro tipo codo de caño, sin estrangular); pesos
+ * mezclados en cuello, contorno del hombro y costados del short. El cuerpo se pensó para verse de
+ * espaldas y desde arriba (cámara del juego): hombros y dorsales en V, omóplatos, short recto.
  *
  * Animación: poses escritas por intención como OBJETIVOS (muñecas y tobillos en el espacio del
  * jugador) resueltos con cinemática inversa de dos huesos; los pies quedan siempre horizontales y
  * apoyados (la cadera baja sola si una pierna no llega). Las poses se mezclan por canales (~150 ms).
  * Sin Math.random: todo lo "aleatorio" sale de hash(look.name + look.num) o de look.phase.
+ *
+ * Estrella: p.update(now, { camera, viewportHeight, starMinPx = 16, starMaxPx = 34 }) ajusta su escala
+ * para que en pantalla mida entre starMinPx y starMaxPx (píxeles CSS de alto). p.update(now) a secas
+ * sigue funcionando: la estrella conserva la última escala calculada (1 si nunca se pasó la cámara).
  */
 (function () {
   'use strict';
@@ -165,6 +171,10 @@
   function shapeOf(list) {
     return (a) => { let f = 1; for (const b of list) { f += bump(a, b[0], b[1], b[2]); if (b[0] !== 0 && Math.abs(Math.abs(b[0]) - Math.PI) > 1e-6) f += bump(a, -b[0], b[1], b[2]); } return f; };
   }
+  // Igual que shapeOf pero sin espejar (músculos distintos por dentro y por fuera de una extremidad)
+  function shapeA(list) {
+    return (a) => { let f = 1; for (const b of list) f += bump(a, b[0], b[1], b[2]); return f; };
+  }
   function cap(y, cz) { return { y, rx: 0.02, rz: 0.02, cz: cz || 0 }; }
 
   // Invierte en X (y el sentido de las caras) para hacer la pieza simétrica.
@@ -295,12 +305,16 @@
   // ------------------------------------------------------------------ Medidas del cuerpo
   // Todo en unidades de mundo con h = 1. El personaje mira a +z; su derecha es −x.
   function measures(body) {
-    const k = body === 'delgado' ? 0.8 : body === 'fornido' ? 1.26 : 1;    // grosor de extremidades
-    const kt = body === 'delgado' ? 0.86 : body === 'fornido' ? 1.2 : 1;   // ancho del tronco
-    const kc = body === 'delgado' ? 0.92 : body === 'fornido' ? 1.12 : 1;  // profundidad del pecho
-    const sh = body === 'fornido' ? 1.0 : body === 'delgado' ? -0.55 : 0;  // hombros extra
+    const thin = body === 'delgado', big = body === 'fornido';
+    const k = thin ? 0.84 : big ? 1.13 : 1;    // vientres musculares de brazos y piernas
+    const kj = thin ? 0.9 : big ? 1.07 : 1;    // articulaciones (rodilla, codo, muñeca, tobillo): casi no cambian
+    const kt = thin ? 0.88 : big ? 1.13 : 1;   // ancho de pecho y hombros
+    const kw = thin ? 0.88 : big ? 1.08 : 1;   // cintura y cadera (el fornido es ancho arriba, no abajo)
+    const kc = thin ? 0.92 : big ? 1.08 : 1;   // profundidad del pecho
+    const mu = thin ? 0.55 : big ? 1.6 : 1;    // relieve muscular (deltoides, bíceps, dorsales, gemelos)
+    const sh = big ? 0.8 : thin ? -0.45 : 0;   // hombros extra
     return {
-      k, kt, kc,
+      k, kj, kt, kw, kc, mu,
       hipY: 25.2, hipX: 3.5,
       spineY: 3.3, chestY: 6.0, neckY: 6.2, headY: 0.55,
       shoulder: { x: 4.7 * kt + sh, y: 3.5, z: 0.2 },
@@ -465,7 +479,8 @@
   }
   function buildBodyInner(L) {
     const M = measures(L.body);
-    const k = M.k, kt = M.kt, kc = M.kc;
+    const k = M.k, kj = M.kj, kt = M.kt, kw = M.kw, kc = M.kc, mu = M.mu;
+    const kjm = (k + kj) / 2;
     const bones = [];
     const B = {};
     function bone(name, parent, x, y, z) {
@@ -557,57 +572,69 @@
     add(merge(pieces.map((g) => bindTo(g, I('head')))), 'head');
 
     // --- Tronco: desde adentro del short hasta el cuello (camiseta pintada en el atlas).
-    // Pectorales, surco del esternón, dorsales, columna, hombros caídos, trapecios y clavículas.
-    const sx = M.shoulder.x - 4.8 * kt;
+    // Espalda de deportista: dorsales que abren en V, omóplatos, canal de la columna y trapecios que
+    // suben del acromion a la nuca; al frente pectorales y surco del esternón. La línea de los hombros
+    // llega hasta arriba del deltoides: el brazo nace DEBAJO del hombro, no como una bola al costado.
+    const sx = M.shoulder.x;
     const droop = (d) => (a) => -d * Math.sin(a) * Math.sin(a);
+    const SC = PI - 0.64; // ángulo de los omóplatos
     const torsoRings = [
-      { y: -3.2, rx: 4.0 * kt, rz: 2.8 * kc, cz: 0.1 },
-      { y: 0.0, rx: 4.3 * kt, rz: 2.95 * kc, cz: 0.15, f: shapeOf([[0, 0.3, -0.02], [1.9, 0.5, 0.03]]) },                 // cintura (oblicuos)
-      { y: 2.6, rx: 4.8 * kt, rz: 3.3 * kc, cz: 0.25, f: shapeOf([[0, 0.3, -0.03], [2.25, 0.55, 0.045], [PI, 0.4, -0.02]]) }, // costillas / dorsales
-      { y: 5.0, rx: 5.4 * kt, rz: 3.62 * kc, cz: 0.35, f: shapeOf([[0.5, 0.42, 0.05], [0, 0.2, -0.03], [2.3, 0.55, 0.05], [PI, 0.4, -0.025]]) }, // pecho
-      { y: 7.2, rx: 5.7 * kt, rz: 3.6 * kc, cz: 0.3, f: shapeOf([[0.55, 0.48, 0.065], [0, 0.22, -0.03], [PI, 0.45, -0.025]]) },       // pectorales
-      { y: 9.0, rx: 5.9 * kt + sx, rz: 3.25 * kc, cz: 0.15, f: shapeOf([[0, 0.5, -0.02], [PI, 0.6, 0.02]]), dy: droop(0.55) },     // hombros
-      { y: 9.9, rx: 5.15 * kt + sx * 0.6, rz: 2.85 * kc, cz: 0.05, f: shapeOf([[0, 0.5, -0.035]]), dy: droop(1.0) },
-      { y: 10.9, rx: 3.35 * kt, rz: 2.25 * kc, cz: -0.05, f: shapeOf([[0, 0.6, -0.08], [PI, 0.75, 0.09]]), dy: droop(0.75) },  // trapecios / clavículas
-      { y: 11.5, rx: 1.78 + 0.3 * (kt - 1), rz: 1.58, cz: -0.08, f: shapeOf([[PI, 0.8, 0.1], [0, 0.35, -0.05], [0.75, 0.3, 0.04]]) }, // base del cuello (trapecios, esternocleidomastoideos)
-      { y: 12.5, rx: 1.5 + 0.25 * (kt - 1), rz: 1.44, cz: -0.02, f: shapeOf([[0.7, 0.32, 0.05], [0, 0.3, 0.02], [PI, 0.8, 0.03]]) }, // cuello
-      { y: 13.4, rx: 1.46 + 0.2 * (kt - 1), rz: 1.42, cz: -0.12, f: shapeOf([[0.75, 0.35, 0.03]]), dy: (a) => 0.5 * G(Math.abs(a) - PI, 1.0) }, // nuca y garganta
-      { y: 14.1, rx: 1.36, rz: 1.3, cz: -0.3, dy: (a) => 0.7 * G(Math.abs(a) - PI, 1.0) },                                         // entra en la base del cráneo
+      { y: -3.2, rx: 3.9 * kw, rz: 2.7 * kc, cz: 0.1 },
+      { y: 0.0, rx: 4.05 * kw, rz: 2.8 * kc, cz: 0.12, f: shapeOf([[0, 0.3, -0.02], [1.9, 0.5, 0.025], [PI, 0.26, -0.04]]) },                                             // cintura
+      { y: 2.6, rx: 2.3 * kw + 2.3 * kt, rz: 3.1 * kc, cz: 0.2, f: shapeOf([[0, 0.3, -0.03], [2.1, 0.5, 0.05 + 0.02 * mu], [PI, 0.24, -0.08]]) },                       // costillas / dorsales
+      { y: 5.0, rx: 5.35 * kt, rz: 3.4 * kc, cz: 0.3, f: shapeOf([[0.5, 0.42, 0.05], [0, 0.2, -0.03], [2.05, 0.5, 0.05 + 0.025 * mu], [SC, 0.36, 0.045], [PI, 0.22, -0.09]]) }, // pecho / dorsales
+      { y: 7.2, rx: 5.75 * kt, rz: 3.4 * kc, cz: 0.22, f: shapeOf([[0.55, 0.48, 0.065], [0, 0.22, -0.03], [SC, 0.4, 0.075 + 0.015 * mu], [PI, 0.22, -0.085]]) },             // pectorales / omóplatos
+      { y: 9.1, rx: sx + 1.0, rz: 3.1 * kc, cz: 0.06, f: shapeOf([[0, 0.5, -0.02], [SC - 0.05, 0.42, 0.06], [PI, 0.26, -0.05]]), dy: droop(0.2) },                          // hombros
+      { y: 10.55, rx: sx + 0.55, rz: 2.6 * kc, cz: -0.06, f: shapeOf([[0, 0.5, -0.04], [SC, 0.5, 0.035]]), dy: droop(0.25) },
+      { y: 11.3, rx: sx - 0.35, rz: 2.15 * kc, cz: -0.15, f: shapeOf([[0, 0.6, -0.08], [PI, 0.8, 0.05]]), dy: droop(0.25) },                                                   // acromion
+      { y: 11.8, rx: 3.05 * (0.4 + 0.6 * kt), rz: 1.95 * kc, cz: -0.15, f: shapeOf([[0, 0.6, -0.1], [PI, 0.75, 0.07 + 0.02 * mu]]), dy: droop(0.2) },                          // trapecios / clavículas
+      { y: 12.2, rx: 1.86 + 0.3 * (kt - 1), rz: 1.6, cz: -0.1, f: shapeOf([[PI, 0.8, 0.1], [0, 0.35, -0.05], [0.75, 0.3, 0.04]]) },                                            // base del cuello
+      { y: 12.8, rx: 1.52 + 0.25 * (kt - 1), rz: 1.45, cz: -0.05, f: shapeOf([[0.7, 0.32, 0.05], [0, 0.3, 0.02], [PI, 0.8, 0.04]]) },                                          // cuello
+      { y: 13.4, rx: 1.46 + 0.2 * (kt - 1), rz: 1.42, cz: -0.12, f: shapeOf([[0.75, 0.35, 0.03]]), dy: (a) => 0.5 * G(Math.abs(a) - PI, 1.0) },                                // nuca y garganta
+      { y: 14.1, rx: 1.36, rz: 1.3, cz: -0.3, dy: (a) => 0.7 * G(Math.abs(a) - PI, 1.0) },                                                                                     // entra en la base del cráneo
     ];
     const torsoGeo = tube(torsoRings, { segs: 26, uv: uvReg(REG.torso) });
-    rings.torso = { v: torsoGeo.userData.ringV, names: ['in', 'waist', 'ribs', 'chest', 'pecs', 'shoulders', 'shTop', 'traps', 'neckBase', 'neckMid', 'neckTop', 'neckIn'], def: torsoRings };
-    // El cuello sigue al hueso del cuello y, arriba (dentro del cráneo), en parte a la cabeza
+    rings.torso = { v: torsoGeo.userData.ringV, names: ['in', 'waist', 'ribs', 'chest', 'pecs', 'shoulders', 'shTop', 'acro', 'traps', 'neckBase', 'neckMid', 'neckTop', 'neckIn'], def: torsoRings };
+    // Pesos: el cuello sigue al hueso del cuello y, arriba (dentro del cráneo), en parte a la cabeza;
+    // el contorno del hombro acompaña un poco al brazo (se recoge al levantarlo).
     {
       const c = torsoGeo.attributes.position.count, pp = torsoGeo.attributes.position;
       const si = new Uint16Array(c * 4), sw = new Float32Array(c * 4);
       for (let i = 0; i < c; i++) {
-        const y = pp.getY(i);
-        const wn = smooth((y - 10.6) / 2.2) * 0.9, wh = smooth((y - 12.9) / 1.2) * 0.6;
-        si[i * 4] = I('spine'); sw[i * 4] = 1 - wn; si[i * 4 + 1] = I('neck'); sw[i * 4 + 1] = wn * (1 - wh); si[i * 4 + 2] = I('head'); sw[i * 4 + 2] = wn * wh;
+        const x = pp.getX(i), y = pp.getY(i), z = pp.getZ(i);
+        const wn = smooth((y - 11.3) / 1.7) * 0.9 * smooth((4.0 - Math.abs(x)) / 1.6), wh = smooth((y - 12.9) / 1.2) * 0.6;
+        const ws = 0.3 * smooth((3.2 - Math.hypot(Math.abs(x) - sx, y - 9.5, z - 0.2)) / 2.2);
+        si[i * 4] = I('spine'); sw[i * 4] = (1 - wn) * (1 - ws);
+        si[i * 4 + 1] = I('neck'); sw[i * 4 + 1] = wn * (1 - wh) * (1 - ws);
+        si[i * 4 + 2] = I('head'); sw[i * 4 + 2] = wn * wh * (1 - ws);
+        si[i * 4 + 3] = I(x < 0 ? 'shoulderR' : 'shoulderL'); sw[i * 4 + 3] = ws;
       }
       torsoGeo.setAttribute('skinIndex', new T.BufferAttribute(si, 4)); torsoGeo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
     }
     add(torsoGeo, 'spine');
 
-    // --- Pelvis (parte alta del short, tela holgada), cerrada por abajo
+    // --- Pelvis (parte alta del short): cintura elástica por fuera de la camiseta, glúteos y una
+    // entrepierna corta. Las perneras (en el muslo) cuelgan rectas desde la cadera: sin globo.
+    const ks = 0.3 + 0.7 * k;                 // holgura de la tela según el cuerpo
+    const hw = M.hipX + 2.72 * ks;            // semiancho del short a la altura de la cadera
     const pelvisRings = [
-      cap(-5.3, 0.05),
-      { y: -4.9, rx: 6.85 * kt, rz: 3.3 * kc, cz: 0.05 },
-      { y: -3.6, rx: 6.95 * kt, rz: 3.5 * kc, cz: 0.1 },
-      { y: -1.5, rx: 6.8 * kt, rz: 3.85 * kc, cz: 0.15 },
-      { y: 1.0, rx: 6.2 * kt, rz: 4.0 * kc, cz: 0.15 },
-      { y: 3.6, rx: 5.3 * kt, rz: 3.65 * kc, cz: 0.15 },
-      { y: 5.0, rx: 4.65 * kt, rz: 3.2 * kc, cz: 0.15 }, // cintura del short
-      { y: 5.6, rx: 4.3 * kt, rz: 2.95 * kc, cz: 0.15 },
+      cap(-3.3, 0),
+      { y: -3.0, rx: hw * 0.8, rz: 2.2 * kc, cz: 0 },                                                                   // entrepierna
+      { y: -1.8, rx: hw * 0.985, rz: 3.15 * kc, cz: -0.08, f: shapeOf([[PI - 0.6, 0.5, 0.04], [PI, 0.22, -0.03]]) },
+      { y: -0.2, rx: hw, rz: 3.45 * kc, cz: -0.12, f: shapeOf([[PI - 0.6, 0.5, 0.05], [PI, 0.22, -0.035]]) },             // glúteos
+      { y: 1.7, rx: hw * 0.72 + 4.5 * kw * 0.28, rz: 3.4 * kc, cz: 0, f: shapeOf([[PI - 0.6, 0.5, 0.025]]) },
+      { y: 3.6, rx: 4.75 * kw, rz: 3.2 * kc, cz: 0.1 },
+      { y: 4.9, rx: 4.6 * kw, rz: 3.1 * kc, cz: 0.12 },                                                                 // cintura del short
+      { y: 5.5, rx: 4.15 * kw, rz: 2.8 * kc, cz: 0.12 },
     ];
     const pelvisGeo = tube(pelvisRings, { segs: 24, uv: uvReg(REG.pelvis) });
     {
-      // Pesos: la parte baja del short (y < 0) sigue en parte al muslo de su lado
+      // Pesos: los costados bajos del short siguen en parte al muslo de su lado
       const c = pelvisGeo.attributes.position.count, pp = pelvisGeo.attributes.position;
       const si = new Uint16Array(c * 4), sw = new Float32Array(c * 4);
       for (let i = 0; i < c; i++) {
         const x = pp.getX(i), y = pp.getY(i);
-        const w = clamp(-y / 4.0, 0, 1) * 0.7 * clamp((Math.abs(x) - 0.8) / 2.5, 0, 1);
+        const w = smooth((0.8 - y) / 3.4) * 0.5 * clamp((Math.abs(x) - 0.8) / 2.5, 0, 1);
         si[i * 4] = I('hips'); sw[i * 4] = 1 - w; si[i * 4 + 1] = I(x < 0 ? 'thighR' : 'thighL'); sw[i * 4 + 1] = w;
       }
       pelvisGeo.setAttribute('skinIndex', new T.BufferAttribute(si, 4)); pelvisGeo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
@@ -620,38 +647,58 @@
     const handUV = swUV(SW.hand), armUV = swUV(SW.upperArm), darkUV = swUV(SW.dark), soleUV = swUV(SW.white);
     for (const s of ['R', 'L']) {
       const mir = s === 'R';
-      // Muslo: cuádriceps (dos cabezas), isquiotibiales, vasto externo y rótula; pernera del short holgada
+      // Muslo: pernera del short que cae recta hasta casi la rodilla (pliegues en el ruedo) y, debajo,
+      // piel: vasto interno (gota sobre la rodilla), vasto externo y rótula. Las articulaciones usan kj.
+      const fold = (n, amp, ph) => (a) => 1 + amp * Math.sin(a * n + ph);
       const thighRings = [
-        { y: 0.3, rx: 2.3 * k, rz: 2.5 * k, cz: -0.1 },
-        { y: -1.0, rx: 3.1 * k, rz: 3.3 * k, cz: 0 },
-        { y: -3.5, rx: 3.3 * k, rz: 3.45 * k, cz: 0, f: shapeOf([[0.35, 0.5, 0.02]]) },
-        { y: -6.0, rx: 3.4 * k, rz: 3.5 * k, cz: 0 },
-        { y: -7.3, rx: 3.45 * k, rz: 3.55 * k, cz: 0 },      // ruedo
-        { y: -7.45, rx: 2.4 * k, rz: 2.5 * k, cz: 0, f: shapeOf([[0.4, 0.5, 0.06], [PI, 0.6, 0.04]]) }, // piel bajo el ruedo
-        { y: -9.5, rx: 2.05 * k, rz: 2.12 * k, cz: 0.05, f: shapeOf([[0.45, 0.45, 0.07], [OUT, 0.5, 0.03], [PI, 0.5, 0.025]]) },
-        { y: -10.5, rx: 1.78 * k, rz: 1.86 * k, cz: 0.08, f: shapeOf([[0, 0.5, 0.05]]) },               // rodilla
-        { y: -11.3, rx: 1.7 * k, rz: 1.76 * k, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },                // anillo compartido con la pantorrilla
+        cap(2.7, -0.1),                                                            // cúpula cerrada alrededor de la cadera:
+        { y: 2.3, rx: 1.5 * ks, rz: 1.55 * ks, cz: -0.1 },                         // al flexionar el muslo no deja huecos
+        { y: 1.3, rx: 2.3 * ks, rz: 2.4 * ks, cz: -0.08 },
+        { y: -0.2, rx: 2.68 * ks, rz: 2.86 * ks, cz: -0.05 },
+        { y: -1.6, rx: 2.72 * ks, rz: 2.9 * ks, cz: -0.03 },
+        { y: -3.6, rx: 2.68 * ks, rz: 2.84 * ks, cz: 0, f: fold(3, 0.018, 0.8) },
+        { y: -6.2, rx: 2.64 * ks, rz: 2.78 * ks, cz: 0.02, f: fold(4, 0.026, 2.1) },
+        { y: -8.3, rx: 2.7 * ks, rz: 2.82 * ks, cz: 0.05, f: fold(4, 0.04, 0.4) },   // ruedo
+        { y: -8.45, rx: 2.0 * k, rz: 2.1 * k, cz: 0.02, f: shapeOf([[0.4, 0.5, 0.05], [PI, 0.6, 0.03]]) }, // piel bajo el ruedo
+        { y: -9.7, rx: 1.76 * kjm, rz: 1.84 * kjm, cz: 0.05, f: shapeA([[IN * 0.45, 0.45, 0.03 + 0.03 * mu], [OUT * 0.5, 0.5, 0.03], [PI, 0.5, 0.02]]) },
+        { y: -10.5, rx: 1.6 * kj, rz: 1.66 * kj, cz: 0.08, f: shapeOf([[0, 0.5, 0.05]]) },               // rodilla
+        { y: -11.3, rx: 1.52 * kj, rz: 1.58 * kj, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },              // anillo compartido con la pantorrilla
       ];
       const th = tube(thighRings, { segs: 16, uv: uvReg(REG.thigh) });
-      rings.thigh = { v: th.userData.ringV, names: ['top', 'hip', 'mid', 'low', 'hem', 'skin', 'lower', 'knee', 'joint'] };
-      if (mir) mirrorX(th);
-      add(bindBlend(th, I('thigh' + s), I('knee' + s), -9.2, -11.3, 0.5), 'thigh' + s);
-      // Pantorrilla: gemelos (dos cabezas), tibia plana al frente, maléolos; media pintada
+      rings.thigh = { v: th.userData.ringV, names: ['cap', 'dome', 'dome2', 'top', 'hip', 'mid', 'low', 'hem', 'skin', 'lower', 'knee', 'joint'] };
+      // Pantorrilla: gemelos (dos cabezas, la interna más baja), tibia plana al frente, tendón de
+      // Aquiles y maléolos; media pintada
+      const cf = 0.07 + 0.035 * mu;
       const shinRings = [
-        { y: 0.0, rx: 1.7 * k, rz: 1.76 * k, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },               // mismo anillo que el muslo (sin costura)
-        { y: -1.5, rx: 1.78 * k, rz: 2.05 * k, cz: -0.38, f: shapeOf([[PI - 0.55, 0.55, 0.1], [0, 0.4, -0.04]]) },  // gemelos
-        { y: -4.0, rx: 1.66 * k, rz: 1.92 * k, cz: -0.36, f: shapeOf([[PI - 0.5, 0.55, 0.08], [0, 0.35, -0.03]]) },
-        { y: -6.5, rx: 1.3 * k, rz: 1.47 * k, cz: -0.2, f: shapeOf([[PI, 0.6, 0.04]]) },   // alto de la media
-        { y: -9.0, rx: 1.1 * k, rz: 1.2 * k, cz: -0.1 },
-        { y: -11.0, rx: 1.06 * k, rz: 1.16 * k, cz: 0, f: shapeOf([[OUT, 0.45, 0.07]]) },   // tobillo (maléolos)
+        { y: 0.0, rx: 1.52 * kj, rz: 1.58 * kj, cz: 0.05, f: shapeOf([[0, 0.5, 0.04]]) },               // mismo anillo que el muslo (sin costura)
+        { y: -1.3, rx: 1.58 * kjm, rz: 1.84 * k, cz: -0.3, f: shapeOf([[PI - 0.55, 0.5, cf * 0.8], [0, 0.4, -0.04]]) },
+        { y: -3.1, rx: 1.66 * k, rz: 1.98 * k, cz: -0.5, f: shapeOf([[PI - 0.52, 0.5, cf], [0, 0.35, -0.04]]) },   // vientre de los gemelos
+        { y: -5.0, rx: 1.42 * k, rz: 1.66 * k, cz: -0.4, f: shapeOf([[PI - 0.4, 0.5, cf * 0.5], [0, 0.35, -0.03]]) },
+        { y: -7.0, rx: 1.14 * kjm, rz: 1.26 * kjm, cz: -0.2, f: shapeOf([[PI, 0.5, 0.05]]) },            // alto de la media
+        { y: -9.2, rx: 1.0 * kj, rz: 1.1 * kj, cz: -0.08, f: shapeOf([[PI, 0.4, 0.06]]) },               // tendón de Aquiles
+        { y: -11.0, rx: 1.0 * kj, rz: 1.1 * kj, cz: 0, f: shapeOf([[OUT, 0.45, 0.07]]) },                // tobillo (maléolos)
         cap(-11.8, 0),
       ];
-      const sh = tube(shinRings, { segs: 14, uv: uvReg(REG.shin) });
-      rings.shin = { v: sh.userData.ringV, names: ['knee', 'calf', 'calf2', 'sockTop', 'sock', 'ankle', 'cap2'] };
-      if (mir) mirrorX(sh);
-      add(bindBlend(sh, I('knee' + s), I('thigh' + s), -2.1, 0.0, 0.5), 'knee' + s);
-      // Rótula: esfera en la articulación, ligeramente alargada (cubre el hueco al doblar)
-      add(jointSphere(1.52 * k, [0.5, 1 - (REG.shin[0] + 6) / ATLAS], I('knee' + s), 1.12), 'knee' + s); // solo asoma con la rodilla doblada
+      const sh = tube(shinRings, { segs: 16, uv: uvReg(REG.shin) });
+      rings.shin = { v: sh.userData.ringV, names: ['knee', 'calf', 'calf2', 'calf3', 'sockTop', 'sock', 'ankle', 'cap2'] };
+      // Normales promediadas en el anillo compartido (sin salto de tono entre muslo y pantorrilla)
+      {
+        const na = th.attributes.normal, nb = sh.attributes.normal, base = 11 * 17;
+        for (let j = 0; j <= 16; j++) {
+          const x = na.getX(base + j) + nb.getX(j), y = na.getY(base + j) + nb.getY(j), z = na.getZ(base + j) + nb.getZ(j), l = Math.hypot(x, y, z) || 1;
+          na.setXYZ(base + j, x / l, y / l, z / l); nb.setXYZ(j, x / l, y / l, z / l);
+        }
+      }
+      if (mir) { mirrorX(th); mirrorX(sh); }
+      // Pesos rígidos: muslo y pantorrilla giran alrededor de la rótula como un codo de caño (sin estrangular)
+      add(bindTo(th, I('thigh' + s)), 'thigh' + s);
+      add(bindTo(sh, I('knee' + s)), 'knee' + s);
+      // Rótula: elipsoide del mismo radio que los anillos de la rodilla (queda al ras; al flexionar
+      // completa la curva en lugar de asomar como una bola)
+      {
+        const g = new T.SphereGeometry(1.56 * kj, 14, 10); g.scale(1, 1, 1.03); g.translate(0, 0, 0.1);
+        add(bindTo(flatUV(g, 0.5, 1 - (REG.shin[0] + 6) / ATLAS), I('knee' + s)), 'knee' + s);
+      }
       // Zapatilla de básquet (caña alta): empeine, puntera redondeada, talón; suela aparte con labio
       const shoeRings = [
         cap(2.7, -1.2),
@@ -690,35 +737,44 @@
       const shoeAll = merge(shoePieces);
       if (mir) mirrorX(shoeAll);
       add(bindTo(shoeAll, I('ankle' + s)), 'ankle' + s);
-      // Brazo: deltoides exterior, bíceps al frente, tríceps atrás, codo
+      // Brazo: deltoides (cae en punta hacia el costado del brazo), bíceps al frente, tríceps atrás;
+      // se afina hacia el codo. El extremo de arriba es media esfera centrada en la articulación.
+      const dl = 0.1 * mu, bi = 0.085 * mu, tri = 0.065 * mu;
       const uaRings = [
-        cap(2.2, 0),                                                                                   // cierra el extremo (redondea el hombro)
-        { y: 2.05, rx: 0.7 * k, rz: 0.7 * k },
-        { y: 1.75, rx: 1.4 * k, rz: 1.38 * k, f: shapeOf([[OUT, 0.8, 0.05]]) },
-        { y: 1.2, rx: 1.75 * k, rz: 1.7 * k, f: shapeOf([[OUT, 0.8, 0.06]]) },
-        { y: 0.4, rx: 1.95 * k, rz: 1.88 * k, f: shapeOf([[OUT, 0.9, 0.12], [IN, 0.6, -0.06]]) },     // deltoides
-        { y: -1.4, rx: 1.98 * k, rz: 1.92 * k, f: shapeOf([[OUT, 0.85, 0.1], [IN, 0.6, -0.05]]) },
-        { y: -3.2, rx: 1.8 * k, rz: 1.78 * k, f: shapeOf([[OUT, 0.8, 0.04], [0, 0.5, 0.04], [PI, 0.6, 0.045]]) },
-        { y: -5.4, rx: 1.6 * k, rz: 1.62 * k, f: shapeOf([[0, 0.5, 0.11], [PI, 0.6, 0.07]]) },         // bíceps / tríceps
-        { y: -7.4, rx: 1.4 * k, rz: 1.4 * k, f: shapeOf([[0, 0.5, 0.05], [PI, 0.5, 0.03]]) },
-        { y: -9.2, rx: 1.26 * k, rz: 1.26 * k },
+        cap(1.85, 0),
+        { y: 1.7, rx: 0.75 * k, rz: 0.78 * k },
+        { y: 1.35, rx: 1.3 * k, rz: 1.34 * k, f: shapeA([[OUT, 0.8, 0.04]]) },
+        { y: 0.7, rx: 1.62 * k, rz: 1.68 * k, f: shapeA([[OUT, 0.8, 0.04 + dl * 0.4]]) },
+        { y: -0.3, rx: 1.72 * k, rz: 1.8 * k, f: shapeA([[OUT, 0.9, dl], [IN, 0.6, -0.06]]) },                                    // deltoides
+        { y: -1.8, rx: 1.66 * k, rz: 1.76 * k, f: shapeA([[OUT, 0.85, dl * 0.9], [IN, 0.6, -0.05], [PI, 0.6, tri * 0.5]]) },
+        { y: -3.3, rx: 1.48 * k, rz: 1.6 * k, f: shapeA([[OUT, 0.7, dl * 0.3], [0, 0.5, bi * 0.6], [PI - 0.3, 0.6, tri]]) },       // inserción del deltoides
+        { y: -5.2, rx: 1.36 * k, rz: 1.5 * k, f: shapeA([[0, 0.5, bi], [PI - 0.2, 0.6, tri * 0.9]]) },                             // bíceps / tríceps
+        { y: -7.2, rx: 1.2 * kjm, rz: 1.26 * kjm, f: shapeA([[0, 0.5, bi * 0.4], [PI, 0.5, 0.03]]) },
+        { y: -9.0, rx: 1.1 * kj, rz: 1.12 * kj },                                                                                   // codo
       ];
       const ua = tube(uaRings, { segs: 14, uv: skinSw(SW.upperArm) });
-      if (mir) mirrorX(ua);
-      add(bindBlend(ua, I('shoulder' + s), I('elbow' + s), -7.2, -9.2, 0.5), 'shoulder' + s);
       // Antebrazo: braquiorradial arriba y afuera, muñeca aplanada
       const faRings = [
-        { y: 0.4, rx: 1.3 * k, rz: 1.3 * k },
-        { y: -1.6, rx: 1.4 * k, rz: 1.36 * k, f: shapeOf([[OUT + 0.3, 0.7, 0.09], [0, 0.5, 0.02]]) },
-        { y: -4.2, rx: 1.15 * k, rz: 1.08 * k, f: shapeOf([[OUT + 0.2, 0.7, 0.04]]) },
-        { y: -6.6, rx: 0.98 * k, rz: 0.82 * k },
-        { y: -8.4, rx: 0.9 * k, rz: 0.62 * k },
-        cap(-9.0, 0),
+        { y: 0.0, rx: 1.1 * kj, rz: 1.12 * kj },                                                                                    // mismo anillo que el brazo (sin costura)
+        { y: -1.5, rx: 1.24 * k, rz: 1.2 * k, f: shapeA([[OUT + 0.3, 0.7, 0.06 + 0.03 * mu], [0, 0.5, 0.02]]) },
+        { y: -4.0, rx: 1.04 * k, rz: 0.98 * k, f: shapeA([[OUT + 0.2, 0.7, 0.04]]) },
+        { y: -6.4, rx: 0.93 * kjm, rz: 0.76 * kjm },
+        { y: -8.3, rx: 0.93 * k, rz: 0.6 * k },
+        cap(-8.9, 0),
       ];
-      const fa = tube(faRings, { segs: 12, uv: skinSw(SW.forearm) });
-      if (mir) mirrorX(fa);
-      add(bindBlend(fa, I('elbow' + s), I('shoulder' + s), -1.6, 0.4, 0.5), 'elbow' + s);
-      add(jointSphere(1.3 * k, armUV, I('elbow' + s), 1.12), 'elbow' + s);
+      const fa = tube(faRings, { segs: 14, uv: skinSw(SW.forearm) });
+      {
+        const na = ua.attributes.normal, nb = fa.attributes.normal, base = 9 * 15;
+        for (let j = 0; j <= 14; j++) {
+          const x = na.getX(base + j) + nb.getX(j), y = na.getY(base + j) + nb.getY(j), z = na.getZ(base + j) + nb.getZ(j), l = Math.hypot(x, y, z) || 1;
+          na.setXYZ(base + j, x / l, y / l, z / l); nb.setXYZ(j, x / l, y / l, z / l);
+        }
+      }
+      if (mir) { mirrorX(ua); mirrorX(fa); }
+      add(bindTo(ua, I('shoulder' + s)), 'shoulder' + s);
+      add(bindTo(fa, I('elbow' + s)), 'elbow' + s);
+      add(jointSphere(1.1 * kj, armUV, I('elbow' + s), 1.0), 'elbow' + s);
+      if (!mir) { rings.armL = { ua: uaRings, fa: faRings }; }
       // Mano: palma con forma, nudillos, cuatro dedos separados y curvados, pulgar del lado interno
       const handRings = [
         cap(0.5, 0),
@@ -790,26 +846,41 @@
       }
     } else if (style === 'trenzas') {
       hairPieces.push(hairCap(HEAD_C, HEAD_R, 0.03, (a) => HAIRLINE_STD(a) - 0.02, null, hairReg, 36, 12));
-      // Trenzas pegadas (cornrows): filas paralelas que siguen el cráneo de la frente a la nuca
-      // y cuelgan por detrás hasta los hombros, con nudos (radio ondulado)
-      for (let i = 0; i < 9; i++) {
-        const xi = (i - 4) * 0.47 * HS;
-        const kk = 1.045, q = Math.sqrt(Math.max(0.05, 1 - (xi / (HEAD_R.x * kk)) * (xi / (HEAD_R.x * kk))));
-        const ry = HEAD_R.y * kk * q, rz = HEAD_R.z * kk * q;
-        const th0 = HAIRLINE_STD(0) - 0.06 + Math.abs(i - 4) * 0.045, th1 = -(PI - 1.45);
-        const pts = [];
-        for (let kk2 = 0; kk2 <= 7; kk2++) {
-          const th = lerp(th0, th1, kk2 / 7);
-          pts.push(new T.Vector3(xi, HEAD_C.y + Math.cos(th) * ry, HEAD_C.z + Math.sin(th) * rz));
+      // Trenzas pegadas (cornrows): 7 filas gruesas de la frente a la nuca. Desde ahí cuelgan en
+      // mechones con volumen: trenzas más anchas que se afinan hacia la punta, con nudos, de largos
+      // distintos y en dos capas (las de abajo, más cortas, rellenan), recogidas hacia el centro.
+      const braid = (pts, segsT, rad, radial, taper, ph) => {
+        const tb = new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'centripetal'), segsT, rad, radial, false);
+        const pp = tb.attributes.position, nn = tb.attributes.normal, per = radial + 1;
+        for (let vi = 0; vi < pp.count; vi++) {
+          const seg = Math.floor(vi / per), u = seg / segsT;
+          const kR = (1 - taper * u * u) * (1 + 0.2 * Math.sin(seg * 2.3 + ph)) - 1;
+          pp.setXYZ(vi, pp.getX(vi) + nn.getX(vi) * rad * kR, pp.getY(vi) + nn.getY(vi) * rad * kR, pp.getZ(vi) + nn.getZ(vi) * rad * kR);
         }
-        const last = pts[pts.length - 1];
-        const sxx = Math.sign(xi) * 0.3;
-        pts.push(new T.Vector3(last.x + sxx, last.y - 2.1, last.z - 0.35));
-        pts.push(new T.Vector3(last.x + sxx * 1.6, last.y - 4.4, last.z - 0.5));
-        const tb = new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'centripetal'), 28, 0.24, 6, false);
-        const pp = tb.attributes.position, nn = tb.attributes.normal;
-        for (let vi = 0; vi < pp.count; vi++) { const seg = Math.floor(vi / 7); const kR = 1 + 0.2 * Math.sin(seg * 1.7 + i); pp.setXYZ(vi, pp.getX(vi) + nn.getX(vi) * 0.24 * (kR - 1), pp.getY(vi) + nn.getY(vi) * 0.24 * (kR - 1), pp.getZ(vi) + nn.getZ(vi) * 0.24 * (kR - 1)); }
-        hairPieces.push(flatUV(tb, hairUV[0], hairUV[1]));
+        return flatUV(tb, hairUV[0], hairUV[1]);
+      };
+      const ends = [];
+      for (let i = 0; i < 7; i++) {
+        const xi = (i - 3) * 0.6 * HS;
+        const kk = 1.05, q = Math.sqrt(Math.max(0.05, 1 - (xi / (HEAD_R.x * kk)) * (xi / (HEAD_R.x * kk))));
+        const ry = HEAD_R.y * kk * q, rz = HEAD_R.z * kk * q;
+        const th0 = HAIRLINE_STD(0) - 0.06 + Math.abs(i - 3) * 0.06, th1 = -(PI - 1.45);
+        const pts = [];
+        for (let j = 0; j <= 7; j++) { const th = lerp(th0, th1, j / 7); pts.push(new T.Vector3(xi, HEAD_C.y + Math.cos(th) * ry, HEAD_C.z + Math.sin(th) * rz)); }
+        hairPieces.push(braid(pts, 14, 0.27, 5, 0, i));
+        ends.push(pts[pts.length - 1]);
+      }
+      for (let i = 0; i < 11; i++) {
+        const under = i >= 7;                                   // capa de abajo: entre dos filas
+        const e = under ? ends[i - 6].clone().lerp(ends[i - 5], 0.5) : ends[i];
+        const len = (under ? 2.6 : 3.6) + 1.5 * nz(i, 5), sg = e.x / HEAD_R.x, zb = under ? 0.15 : -0.3;
+        const pts = [
+          new T.Vector3(e.x, e.y + 0.25, e.z + 0.12),
+          new T.Vector3(e.x * 0.97, e.y - len * 0.3, e.z + zb - 0.25),
+          new T.Vector3(e.x * 0.86 + sg * 0.1, e.y - len * 0.68, e.z + zb - 0.42),
+          new T.Vector3(e.x * 0.78 + sg * 0.25 * (nz(i, 9) - 0.3), e.y - len, e.z + zb - 0.38),
+        ];
+        hairPieces.push(braid(pts, 8, under ? 0.34 : 0.38, 6, 0.6, i * 1.7));
       }
     }
     if (hairPieces.length) add(merge(hairPieces.map((g) => bindTo(g, I('head')))), 'head');
@@ -824,20 +895,22 @@
       g.rotateX(PI / 2); g.scale(1, 1, (sk.rz + 0.08 + extra) / (sk.rx + 0.08 + extra)); g.translate(0, 4.75 * HS, sk.cz * HS);
       add(bindTo(flatUV(g, trimUV[0], trimUV[1]), I('head')), 'head');
     } else if (acc === 'manga') {
-      // Manga de compresión en el brazo izquierdo (dos tubos con la misma musculatura)
-      const g1 = tube([{ y: -0.2, rx: 2.08 * k, rz: 2.02 * k, f: shapeOf([[OUT, 0.85, 0.1], [IN, 0.6, -0.05]]) }, { y: -3.2, rx: 1.9 * k, rz: 1.88 * k, f: shapeOf([[0, 0.5, 0.04], [PI, 0.6, 0.045]]) }, { y: -5.4, rx: 1.7 * k, rz: 1.72 * k, f: shapeOf([[0, 0.5, 0.11], [PI, 0.6, 0.07]]) }, { y: -8.3, rx: 1.46 * k, rz: 1.46 * k }, { y: -9.6, rx: 1.36 * k, rz: 1.36 * k }], { segs: 14 });
-      add(bindBlend(flatUV(g1, jerseyUV[0], jerseyUV[1]), I('shoulderL'), I('elbowL'), -7.2, -9.2, 0.5), 'shoulderL');
-      const g2 = tube([{ y: 0.9, rx: 1.4 * k, rz: 1.4 * k }, { y: -1.6, rx: 1.5 * k, rz: 1.46 * k, f: shapeOf([[OUT + 0.3, 0.7, 0.09]]) }, { y: -4.2, rx: 1.24 * k, rz: 1.18 * k }, { y: -6.6, rx: 1.06 * k, rz: 0.92 * k }, { y: -8.0, rx: 0.98 * k, rz: 0.72 * k }], { segs: 12 });
-      add(bindBlend(flatUV(g2, jerseyUV[0], jerseyUV[1]), I('elbowL'), I('shoulderL'), -1.6, 0.4, 0.5), 'elbowL');
-      add(jointSphere(1.4 * k, jerseyUV, I('elbowL'), 1.12), 'elbowL');
+      // Manga de compresión en el brazo izquierdo: los mismos anillos del brazo, un poco más anchos
+      const grow = (r0, d, y) => Object.assign({}, r0, { rx: r0.rx + d, rz: r0.rz + d, y: y == null ? r0.y : y });
+      const ua = rings.armL.ua, fa = rings.armL.fa;
+      const g1 = tube([grow(ua[5], 0.1, -1.0), grow(ua[5], 0.1), grow(ua[6], 0.1), grow(ua[7], 0.1), grow(ua[8], 0.1), grow(ua[9], 0.1)], { segs: 14 });
+      add(bindTo(flatUV(g1, jerseyUV[0], jerseyUV[1]), I('shoulderL')), 'shoulderL');
+      const g2 = tube([grow(fa[0], 0.1), grow(fa[1], 0.1), grow(fa[2], 0.1), grow(fa[3], 0.09), grow(fa[4], 0.09, -7.8)], { segs: 14 });
+      add(bindTo(flatUV(g2, jerseyUV[0], jerseyUV[1]), I('elbowL')), 'elbowL');
+      add(jointSphere(1.2 * kj, jerseyUV, I('elbowL'), 1.0), 'elbowL');
     } else if (acc === 'munequeras') {
       for (const s of ['R', 'L']) {
-        const g = tube([{ y: -6.7, rx: 1.08 * k, rz: 0.95 * k }, { y: -7.7, rx: 1.1 * k, rz: 0.92 * k }, { y: -8.7, rx: 1.04 * k, rz: 0.8 * k }], { segs: 12 });
+        const g = tube([{ y: -6.4, rx: 1.02 * kj, rz: 0.88 * kj }, { y: -7.4, rx: 1.02 * kj, rz: 0.84 * kj }, { y: -8.3, rx: 0.97 * kj, rz: 0.74 * kj }], { segs: 12 });
         add(bindTo(flatUV(g, trimUV[0], trimUV[1]), I('elbow' + s)), 'elbow' + s);
       }
     } else if (acc === 'rodillera') {
-      const g = tube([{ y: 2.0, rx: 1.85 * k, rz: 1.95 * k }, { y: 0.0, rx: 2.05 * k, rz: 2.15 * k }, { y: -2.2, rx: 1.98 * k, rz: 2.22 * k, cz: -0.3 }, { y: -3.4, rx: 1.8 * k, rz: 2.08 * k, cz: -0.3 }], { segs: 14 });
-      add(bindBlend(flatUV(g, jerseyUV[0], jerseyUV[1]), I('kneeR'), I('thighR'), -1.2, 2.0, 0.5), 'kneeR');
+      const g = tube([{ y: 1.9, rx: 1.92 * kjm, rz: 2.0 * kjm, cz: 0.05 }, { y: 0.0, rx: 1.74 * kj, rz: 1.82 * kj, cz: 0.08 }, { y: -1.5, rx: 1.74 * k, rz: 2.0 * k, cz: -0.32 }, { y: -2.7, rx: 1.78 * k, rz: 2.08 * k, cz: -0.45 }], { segs: 16 });
+      add(bindBlend(flatUV(g, jerseyUV[0], jerseyUV[1]), I('kneeR'), I('thighR'), -1.2, 1.9, 0.2), 'kneeR');
     }
 
     return { bones, B, parts, rings, M };
@@ -1132,7 +1205,7 @@
     const trimW = 11;
     const topY = yNeckBase - 1;
     const front = { x: cx, hw: 118, depth: yPecs - topY };
-    const back = { hw: 112, depth: (yShoulders - topY) * 1.2 };
+    const back = { hw: 90, depth: (yShTop - topY) * 1.05 };
     const hole = { hw: 100, depth: yChest - topY };
     for (const pass of [0, 1]) {
       const color = pass === 0 ? trim : skin;
@@ -1153,6 +1226,26 @@
     for (const x of [W * 0.25, W * 0.75]) ctx.fillRect(x - 6, yChest, 12, TR[1] - yChest);
     ctx.fillStyle = rgba(jersey, 1);
     for (const x of [W * 0.25, W * 0.75]) ctx.fillRect(x - 2, yChest, 4, TR[1] - yChest);
+    // Relieve pintado (se lee aunque la luz sea plana y de lejos): canal de la columna, omóplatos,
+    // sombra bajo los dorsales y tela recogida en la cintura; al frente, sombra bajo los pectorales.
+    const jD = shade(jersey, -0.55), jL = mix(jersey, '#FFFFFF', 0.4);
+    const yRibs = trow('ribs');
+    ctx.save(); ctx.beginPath(); ctx.rect(0, yShTop, W, TR[1] - yShTop); ctx.clip();
+    for (const x0 of [0, W]) {
+      blob(x0, (yShoulders + yWaist) / 2, 13, (yWaist - yShoulders) * 0.62, jD, 0.5);                // columna
+      for (const sg of [-1, 1]) {
+        blob(x0 + sg * 100, (yShoulders + yPecs) / 2, 62, (yPecs - yShoulders) * 0.75, jL, 0.36);     // omóplato
+        blob(x0 + sg * 92, yPecs + (yChest - yPecs) * 0.45, 70, (yChest - yPecs) * 0.3, jD, 0.42);    // sombra bajo el omóplato
+        blob(x0 + sg * 190, (yChest + yRibs) / 2, 30, (yRibs - yChest) * 0.8, jD, 0.3);             // bajo el dorsal
+        blob(x0 + sg * 120, (yChest + yRibs) / 2, 50, (yRibs - yChest) * 0.7, jL, 0.18);              // dorsal
+      }
+    }
+    for (const sg of [-1, 1]) blob(cx + sg * 78, yChest + (yRibs - yChest) * 0.1, 70, (yRibs - yChest) * 0.28, jD, 0.16); // bajo los pectorales
+    for (let i = 0; i < 16; i++) {                                                                  // tela recogida en la cintura
+      const x = (i + 0.5 + (r() - 0.5) * 0.6) / 16 * W;
+      blob(x, yWaist - (yWaist - yRibs) * 0.55, 9 + r() * 8, (yWaist - yRibs) * (0.8 + r() * 0.9), i % 2 ? jL : jD, i % 2 ? 0.1 : 0.2);
+    }
+    ctx.restore();
     // Número al frente y atrás, nombre atrás. Se dibuja con la relación de aspecto real del torso
     // (el atlas tiene más píxeles por unidad a lo ancho que a lo alto) para que se lea grande y bien.
     const numStr = String(L.num);
@@ -1186,7 +1279,7 @@
       ctx.save(); ctx.font = fontStack(hPx); ctx.fillStyle = numColor; ctx.strokeStyle = outline; ctx.lineWidth = 2.5;
       const natural = ctx.measureText(nm).width / ppuX;
       const sx = Math.min(aspect * 0.92, 9.5 / natural);
-      for (const x of [0, W]) { ctx.save(); ctx.translate(x, yShoulders + (yPecs - yShoulders) * 0.52); ctx.scale(sx, 1); ctx.strokeText(nm, 0, 0); ctx.fillText(nm, 0, 0); ctx.restore(); }
+      for (const x of [0, W]) { ctx.save(); ctx.translate(x, yShoulders + (yPecs - yShoulders) * 0.4); ctx.scale(sx, 1); ctx.strokeText(nm, 0, 0); ctx.fillText(nm, 0, 0); ctx.restore(); }
       ctx.restore();
     }
 
@@ -1199,6 +1292,18 @@
     ctx.fillStyle = shade(jersey, -0.35); ctx.fillRect(0, PR[0], W, 7); // cintura elástica
     ctx.fillStyle = shade(jersey, 0.25); ctx.fillRect(0, PR[0] + 7, W, 2);
     ctx.fillStyle = trim; for (const x of [W * 0.25, W * 0.75]) ctx.fillRect(x - 7, PR[0] + 9, 14, PR[1] - PR[0] - 9);
+    // Pliegues de la tela: caen verticales desde la cintura (pares sombra/luz); surco entre los glúteos
+    const foldsShort = (y0, y1, n) => {
+      ctx.save(); ctx.beginPath(); ctx.rect(0, y0, W, y1 - y0); ctx.clip();
+      for (let i = 0; i < n; i++) {
+        const x = (i + 0.5 + (r() - 0.5) * 0.7) / n * W, wd = 10 + r() * 12;
+        blob(x, (y0 + y1) / 2 + (r() - 0.5) * (y1 - y0) * 0.5, wd, (y1 - y0) * (0.6 + r() * 0.5), jD, 0.2);
+        blob(x + wd * 1.1, (y0 + y1) / 2, wd * 0.8, (y1 - y0) * 0.6, jL, 0.1);
+      }
+      ctx.restore();
+    };
+    foldsShort(PR[0] + 9, PR[1], 12);
+    for (const x0 of [0, W]) blob(x0, PR[1], 18, (PR[1] - PR[0]) * 0.75, jD, 0.3);
     // fondo del short (entrepierna) oscuro
     ctx.fillStyle = shade(jersey, -0.22); ctx.fillRect(0, PR[1] - 4, W, 4);
     const THR = REG.thigh;
@@ -1208,6 +1313,8 @@
     ctx.fillStyle = 'rgba(0,0,0,.035)'; for (let y = THR[0]; y < yHem; y += 2) ctx.fillRect(0, y, W, 1);
     ctx.fillStyle = trim; ctx.fillRect(W * 0.75 - 7, THR[0], 14, yHem - THR[0]); // franja lateral
     ctx.save(); ctx.translate(W * 0.75 + 34, yHem - 22); ctx.scale(1.6, 1); ctx.font = fontStack(16); ctx.lineWidth = 1.5; ctx.strokeStyle = outline; ctx.strokeText('JM', 0, 0); ctx.fillStyle = trim; ctx.fillText('JM', 0, 0); ctx.restore();
+    foldsShort(THR[0], yHem - 4, 7);
+    blob(W * 0.25, (THR[0] + yHem) / 2, 120, (yHem - THR[0]) * 0.75, jD, 0.26);  // sombra entre las piernas
     ctx.fillStyle = shade(jersey, -0.3); ctx.fillRect(0, yHem - 4, W, 4);        // dobladillo
     ctx.fillStyle = skin; ctx.fillRect(0, yHem, W, THR[1] - yHem);
     g = ctx.createLinearGradient(0, ySkin, 0, ySkin + 18);
@@ -1219,6 +1326,11 @@
     const sv = rings.shin.v, sn = rings.shin.names;
     const ySock = rowOf(SR, sv[sn.indexOf('sockTop')]);
     ctx.fillStyle = skin; ctx.fillRect(0, SR[0], W, SR[1] - SR[0]);
+    {
+      const sD = skinD, sL = skinL, yCalf = rowOf(SR, sv[sn.indexOf('calf2')]);
+      for (const x0 of [0, W]) { blob(x0, yCalf + 8, 9, (ySock - SR[0]) * 0.5, sD, 0.3); for (const sg of [-1, 1]) blob(x0 + sg * 88, yCalf, 60, (ySock - SR[0]) * 0.4, sL, 0.3); }
+      blob(W * 0.25, (SR[0] + ySock) / 2, 90, (ySock - SR[0]) * 0.7, sD, 0.16);
+    }
     ctx.fillStyle = '#F1F0EB'; ctx.fillRect(0, ySock, W, SR[1] - ySock);
     ctx.fillStyle = trim; ctx.fillRect(0, ySock, W, 6);
     ctx.fillStyle = jersey; ctx.fillRect(0, ySock + 8, W, 3);
@@ -1298,7 +1410,13 @@
     g = ctx.createLinearGradient(0, SW.upperArm[2], 0, SW.upperArm[3]);
     g.addColorStop(0, rgba(skinD, 0.25)); g.addColorStop(0.5, rgba(skinD, 0)); g.addColorStop(1, rgba(skinD, 0));
     ctx.fillStyle = g; ctx.fillRect(0, SW.upperArm[2], W, 30);
-    sw(SW.hair, style === 'rapado' ? mix(hair, skin, 0.3) : hair); sw(SW.trim, trim); sw(SW.jersey, jersey); sw(SW.white, '#F1F0EB'); sw(SW.dark, '#22222A');
+    {
+      const sD = skinD;
+      ctx.save(); ctx.beginPath(); ctx.rect(0, SW.upperArm[2], SW.forearm[1], 30); ctx.clip();
+      blob(85, SW.upperArm[2] + 15, 70, 40, sD, 0.24); blob(340 + 85, SW.upperArm[2] + 15, 70, 40, sD, 0.2);
+      ctx.restore();
+    }
+    sw(SW.hair, style === 'rapado'  ? mix(hair, skin, 0.3) : hair); sw(SW.trim, trim); sw(SW.jersey, jersey); sw(SW.white, '#F1F0EB'); sw(SW.dark, '#22222A');
     ctx.restore();
   }
 
@@ -1359,7 +1477,7 @@
     const topY = trow('neckBase') - 1, yPecs = trow('pecs'), yShoulders = trow('shoulders'), yChest = trow('chest');
     ctx.fillStyle = '#808080'; ctx.fillRect(0, TR[0] * s, W, topY - TR[0] * s);
     const scoop = (x0, halfW, top, depth) => { ctx.beginPath(); ctx.moveTo(x0 - halfW, top - 2); ctx.bezierCurveTo(x0 - halfW * 0.95, top + depth * 1.15, x0 + halfW * 0.95, top + depth * 1.15, x0 + halfW, top - 2); ctx.closePath(); ctx.fill(); };
-    scoop(W / 2, 59, topY, yPecs - topY); scoop(0, 56, topY, (yShoulders - topY) * 1.2); scoop(W, 56, topY, (yShoulders - topY) * 1.2); scoop(W * 0.25, 50, topY, yChest - topY); scoop(W * 0.75, 50, topY, yChest - topY);
+    scoop(W / 2, 59, topY, yPecs - topY); scoop(0, 45, topY, (trow('shTop') - topY) * 1.05); scoop(W, 45, topY, (trow('shTop') - topY) * 1.05); scoop(W * 0.25, 50, topY, yChest - topY); scoop(W * 0.75, 50, topY, yChest - topY);
     // pelo: mechones (surcos verticales irregulares)
     const [h0, h1] = reg(REG.hair);
     for (let i = 0; i < 160; i++) { ctx.fillStyle = `rgba(${i % 2 ? 255 : 0},${i % 2 ? 255 : 0},${i % 2 ? 255 : 0},${0.25 + r() * 0.35})`; const x = r() * W; ctx.fillRect(x, h0, 1, h1 - h0); }
@@ -1511,28 +1629,29 @@
         arm(P, s, [s * (sx + 2.2), shy - 9 * Math.cos(a) + 6.5 * Math.sin(a) - 2.6, shz + 9 * Math.sin(a) + 8.8 * Math.cos(a) - 1.2], [s * 0.55, 0.05, -1], 55, -s * 70, 0);
       }
     },
-    // Defensa: postura atlética baja, pies anchos, brazos abiertos con los codos flexionados, vaivén
+    // Defensa (se ve de frente a la cámara): postura atlética baja, pies algo más anchos que los
+    // hombros, una mano arriba que tapa el tiro y la otra baja y abierta que niega el pase; vaivén
     guard(P, t) {
       const sw = Math.sin(t * 2.6), bob = Math.sin(t * 5.2);
-      set(P, 'hips', { y: -6.5 + 0.3 * bob, x: 2.4 * sw, lean: 20, tilt: -3 * sw, twist: 4 * sw });
-      P.chestX = -6; P.neckX = -14; P.neckY = 6 * sw;
-      arm(P, R, [-17.5 - 0.8 * sw, SH_Y - 9.5, 11.0], [-0.4, -1, -0.5], -25, -30, 10);
-      arm(P, Lf, [17.5 - 0.8 * sw, SH_Y - 9.5, 11.0], [0.4, -1, -0.5], -25, 30, -10);
-      leg(P, R, [-11.0 + 1.3 * sw, ANK, 1.2], [-0.4, 0, 1]);
-      leg(P, Lf, [11.0 + 1.3 * sw, ANK, -1.2], [0.4, 0, 1]);
+      set(P, 'hips', { y: -3.4 + 0.3 * bob, x: 2.0 * sw, lean: 19, tilt: -2.5 * sw, twist: 4 * sw - 5 });
+      P.chestX = -5; P.neckX = -15; P.neckY = 5 * sw; P.spineY = 4;
+      arm(P, R, [-11.5 - 0.6 * sw, SH_Y + 1.5 + 0.5 * bob, 12.5], [-0.8, -0.8, -0.3], -30, -20, 8);
+      arm(P, Lf, [16.5 - 0.6 * sw, SH_Y - 13.5, 8.5], [0.5, -0.4, -1], -22, 40, -12);
+      leg(P, R, [-8.2 + 1.2 * sw, ANK, 2.6], [-0.35, 0, 1]);
+      leg(P, Lf, [8.4 + 1.2 * sw, ANK, -1.8], [0.35, 0, 1]);
     },
-    // Pique: tronco apenas inclinado, pies alternados, mano derecha que empuja la pelota (8–22 de
-    // altura) y brazo izquierdo que la protege; la cabeza mira al frente
+    // Pique (se ve de espaldas): parado atlético, casi erguido, pies al ancho de los hombros y
+    // alternados; la mano derecha empuja la pelota y el cuerpo acompaña bajando; el brazo izquierdo
+    // va flexionado delante del cuerpo para protegerla; la cabeza mira al frente
     dribble(P, t) {
       const b = 0.5 + 0.5 * Math.cos((t / 0.5) * Math.PI * 2); // 1 = mano arriba, 0 = mano abajo
       const d = 1 - b;                                           // el cuerpo acompaña el empuje hacia abajo
-      // el tronco se inclina hacia el lado de la pelota al empujarla (el hombro derecho baja)
-      set(P, 'hips', { y: -3.6 - d * 3.0, lean: 15 + d * 10, twist: -9, tilt: 2 + d * 8 });
-      P.chestX = -3 - d * 4; P.neckX = -8 - d * 2; P.neckY = -4; P.neckZ = -(2 + d * 8); P.spineX = 2; P.spineY = -3; P.spineZ = 2 + d * 8;
-      arm(P, R, [-7.4, 8.6 + b * 15.0, 10.6 - d * 1.2], [-0.8, 0.35, -1], 50 - b * 22, 180, 0);
-      arm(P, Lf, [9.8, 25.5 - d * 2.5, 10.5], [1, -0.2, -0.5], 10, -40, -15);
-      leg(P, R, [-6.6, ANK, -3.6], [-0.2, 0, 1]);
-      leg(P, Lf, [6.6, ANK, 4.2], [0.2, 0, 1]);
+      set(P, 'hips', { x: -0.5, y: -2.4 - d * 3.2, lean: 11 + d * 7, twist: -8, tilt: 1.5 + d * 8 });
+      P.chestX = -2 - d * 4; P.neckX = -8 - d * 4; P.neckY = 5; P.neckZ = -(1 + d * 6); P.spineX = 2 + d * 13; P.spineY = -3; P.spineZ = 1 + d * 11;
+      arm(P, R, [-8.2, 6.6 + b * 17.0, 9.6 - d * 1.2], [-0.9, 0.3, -1], 50 - b * 22, 180, 0);
+      arm(P, Lf, [7.4, 26.5 - d * 2.5, 9.0], [0.9, -0.7, -0.5], 14, -50, -12);
+      leg(P, R, [-5.2, ANK, -3.0], [-0.12, 0, 1]);
+      leg(P, Lf, [5.0, ANK, 4.4], [0.1, 0, 1]);
     },
     // Pase de pecho: paso adelante con la izquierda, brazos extendidos al frente con las palmas afuera
     pass(P) {
@@ -1543,14 +1662,15 @@
       leg(P, R, [-5.5, ANK, -5], [-0.1, 0, 1], 16);
       leg(P, Lf, [5.5, ANK, 10], [0.1, 0, 1]);
     },
-    // Recibir: manos arriba y abiertas, rodillas blandas, mirada a la pelota
+    // Recibir: manos abiertas a la altura de la cabeza como blanco para el pase, codos flexionados,
+    // rodillas blandas y un pie adelantado; mirada a la pelota
     catch(P) {
-      set(P, 'hips', { y: -1.8, lean: 4 });
-      P.chestX = -7; P.neckX = -12;
-      arm(P, R, [-10, SH_Y + 7.5, 8.5], [-1, 0.2, -0.4], -32, 0, 8);
-      arm(P, Lf, [10, SH_Y + 7.5, 8.5], [1, 0.2, -0.4], -32, 0, -8);
-      leg(P, R, [-6.5, ANK, 0.8], [-0.2, 0, 1]);
-      leg(P, Lf, [6.5, ANK, -0.4], [0.2, 0, 1]);
+      set(P, 'hips', { y: -2.2, lean: 6, twist: 5 });
+      P.chestX = -6; P.neckX = -10; P.spineY = -3;
+      arm(P, R, [-8.2, SH_Y + 5.0, 9.5], [-1, -0.5, -0.5], -30, 0, 8);
+      arm(P, Lf, [8.6, SH_Y + 3.6, 10.5], [1, -0.5, -0.5], -30, 0, -8);
+      leg(P, R, [-6.0, ANK, -1.6], [-0.25, 0, 1]);
+      leg(P, Lf, [5.8, ANK, 3.0], [0.2, 0, 1]);
     },
     // Tiro: cuerpo estirado, brazo derecho arriba con la muñeca quebrada, mano guía al costado
     shoot(P, t, M, J) {
@@ -1562,15 +1682,16 @@
       leg(P, R, [-4.6, ANK + air * 6, 0.8 + air * 2.5], [-0.1, 0, 1], 38 * air);
       leg(P, Lf, [4.8, ANK + air * 4.5, -1 - air * 2.5], [0.1, 0, 1], 48 * air);
     },
-    // Festejo: brazos en V al cielo con los puños cerrados, pecho arriba, saltitos
+    // Festejo: puño derecho al cielo, el izquierdo apretado a la altura de la cabeza, pecho arriba
+    // y saltitos (los brazos bombean con el salto)
     celebrate(P, t) {
       const j = Math.max(0, Math.sin((t / 0.62) * Math.PI * 2));
-      set(P, 'hips', { y: j * 4.5, lean: -9, tilt: 2, twist: 4 });
-      P.chestX = -8; P.neckX = -22;
-      arm(P, R, [-13, SH_Y + 15.5, -1.5], [-1, 0.3, -0.4], 45, 160, 0);
-      arm(P, Lf, [14, SH_Y + 13.5, -1.0], [1, 0.3, -0.4], 45, -160, 0);
-      leg(P, R, [-6.5, ANK + j * 3.5, -0.5 - j], [-0.2, 0, 1], 25 * j);
-      leg(P, Lf, [6.5, ANK + j * 3.5, -0.5 - j], [0.2, 0, 1], 25 * j);
+      set(P, 'hips', { y: j * 4.5, lean: -8, tilt: 3, twist: 6 });
+      P.chestX = -8; P.neckX = -20; P.spineZ = -3;
+      arm(P, R, [-9.5, SH_Y + 15.8 + j * 0.8, 1.5], [-1, 0.2, -0.5], 50, 170, 0);
+      arm(P, Lf, [12.5, SH_Y + 6.5 + j * 3.5, 3.5], [1, -0.6, -0.4], 55, -150, 0);
+      leg(P, R, [-6.0, ANK + j * 3.5, -0.5 - j], [-0.2, 0, 1], 25 * j);
+      leg(P, Lf, [6.2, ANK + j * 3.5, 0.6 - j], [0.2, 0, 1], 25 * j);
     },
     // Robo: estocada larga hacia adelante, brazo derecho extendido bajo, izquierdo atrás para equilibrar
     steal(P) {
@@ -1630,7 +1751,7 @@
       this.object = new T.Group();
       this.object.name = 'jugador';
       this.pose = 'idle'; this.prevPose = null; this.poseT0 = -1e9;
-      this.jump = 0; this.alpha = 1; this.ringMesh = null; this.starMesh = null; this.ringColor = null;
+      this.jump = 0; this.alpha = 1; this.ringMesh = null; this.starMesh = null; this.ringColor = null; this.starScale = 1;
       this.facing = 0;
       this.lastNow = 0;
       this._build(look);
@@ -1789,7 +1910,7 @@
         _q.copy(hips.quaternion).invert();
       }
     }
-    update(now) {
+    update(now, opts) {
       now = now || 0; this.lastNow = now;
       const t = now / 1000 + this.L.phase;
       let P = evalPose(this.pose, t, this.M, this.jump);
@@ -1797,8 +1918,32 @@
       if (this.prevPose && k < 1) P = blendPose(evalPose(this.prevPose, t, this.M, this.jump), P, smooth(k));
       else this.prevPose = null;
       this._apply(P);
-      if (this.starMesh) { this.starMesh.rotation.y = now / 900; this.starMesh.position.y = HEIGHT + 7 + Math.sin(now / 500) * 0.8 + this.jump / this.L.h; }
+      if (this.starMesh) {
+        if (opts && opts.camera) this._fitStar(opts);
+        const sc = this.starScale;
+        this.starMesh.scale.setScalar(sc);
+        this.starMesh.rotation.y = now / 900;
+        this.starMesh.position.y = HEIGHT + 3.2 + 3.8 * sc + Math.sin(now / 500) * 0.8 + this.jump / this.L.h;
+      }
       return this;
+    }
+    // Ajusta la escala de la estrella para que en pantalla mida entre starMinPx y starMaxPx de alto
+    // (píxeles CSS). opts: { camera, viewportHeight, starMinPx = 16, starMaxPx = 34 }.
+    _fitStar(opts) {
+      const cam = opts.camera, vh = opts.viewportHeight || (typeof innerHeight === 'number' ? innerHeight : 800);
+      const minPx = opts.starMinPx == null ? 16 : opts.starMinPx, maxPx = Math.max(minPx, opts.starMaxPx == null ? 34 : opts.starMaxPx);
+      this.object.updateWorldMatrix(true, false);
+      _v.set(0, HEIGHT + 7, 0).applyMatrix4(this.object.matrixWorld);
+      let pxPerUnit;
+      if (cam.isOrthographicCamera) pxPerUnit = vh * (cam.zoom || 1) / Math.max(1e-6, cam.top - cam.bottom);
+      else {
+        cam.getWorldDirection(_hv);
+        _hw.setFromMatrixPosition(cam.matrixWorld);
+        const depth = Math.max(1, _v.sub(_hw).dot(_hv));
+        pxPerUnit = vh * (cam.zoom || 1) / (2 * depth * Math.tan((cam.fov || 50) * DEG / 2));
+      }
+      const natural = 6.8 * this.object.scale.y * pxPerUnit;   // alto de la estrella sin corregir
+      this.starScale = clamp(clamp(natural, minPx, maxPx) / Math.max(1e-6, natural), 0.35, 8);
     }
     // Caja envolvente aproximada en el espacio del objeto (sin escala): a partir de los huesos
     bounds() {
@@ -1813,7 +1958,7 @@
         const r = (pad[key] || 3) * this.L.h;
         box.expandByPoint(v.clone().addScalar(r)); box.expandByPoint(v.clone().subScalar(r));
       }
-      if (this.starMesh) { const s = this.starMesh.position.clone().multiplyScalar(this.L.h); box.expandByPoint(s.clone().addScalar(4.6)); box.expandByPoint(s.clone().subScalar(4.6)); }
+      if (this.starMesh) { const s = this.starMesh.position.clone().multiplyScalar(this.L.h); const rs = 4.6 * this.starScale; box.expandByPoint(s.clone().addScalar(rs)); box.expandByPoint(s.clone().subScalar(rs)); }
       box.min.y = Math.max(box.min.y, 0);
       return box;
     }

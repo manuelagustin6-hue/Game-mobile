@@ -2,6 +2,21 @@
 // líneas exactas del motor, aro con red, público instanciado, luces con sombras, pelota, cámara
 // tipo Score! Hero y overlays dibujados sobre el piso.
 // Requiere THREE (r158, build UMD) como global. Expone window.Scene3D.
+//
+// API (Scene3D.create({ canvas }) devuelve):
+//   resize(w, h, dpr) · setInsets({ top, bottom, left, right }) · setQuality('alta' | 'media' | 'baja')
+//   add(obj) · remove(obj) · courtToWorld · worldToCourt · screenToCourt · courtToScreen
+//   setCamera({ mode: 'holder' | 'follow' | 'cinematic' | 'score', holder, target, points, instant })
+//     'score': festejo tras una canasta (acercamiento con órbita corta hacia el aro y la tribuna).
+//   setOrbit({ yaw, pitch, instant }) · resetOrbit() · getOrbit() → { yaw, pitch, goalYaw, goalPitch,
+//     settled, yawMax, pitchMin, pitchMax, effYaw, shown, total, framed }
+//     El encuadre garantiza poseedor + aro dentro de la zona libre con cualquier giro: si el giro
+//     pedido no lo permite, aplica uno menor (effYaw) y deja fuera a los puntos más lejanos.
+//   setTeams([[local, vivos], [visita, vivos]]): público, banderines, zona pintada, círculo central,
+//     piso perimetral, cubo marcador y papelitos.
+//   cheer(): la hinchada local festeja (de pie, destellos y papelitos unos segundos).
+//   ball.set(x, y, h, visible) · ball.spin(dt) · hoop.swish(0..1) · overlay.* · update(now, dt) · render()
+//   info() → { drawCalls, triangles, ms, crowd, quality, mode, sinceCheer } · dispose()
 (function (root) {
   'use strict';
   const T = root.THREE;
@@ -69,81 +84,173 @@
   }
 
   // ------------------------------------------------------------------ Textura de la cancha
-  // Reproduce exactamente paintCourt de game.js (parqué + líneas) a k píxeles por unidad.
-  function paintCourt(g, w, h) {
-    g.fillStyle = '#D9A866';
+  // Parqué barnizado + líneas del juego (zona pintada, tiros libres, triple = radio 210 al aro con
+  // rectas en x = 24 y 336). La zona y el círculo central llevan los colores del equipo local y el
+  // centro tiene el logo del juego. `far` pinta la mitad lejana (la malla va girada 180°).
+  function shade(hex, k) {                 // k < 0 oscurece hacia negro, k > 0 aclara hacia blanco
+    const c = new T.Color(hex), t = k < 0 ? 0 : 1, a = Math.abs(k);
+    return '#' + new T.Color(c.r + (t - c.r) * a, c.g + (t - c.g) * a, c.b + (t - c.b) * a).getHexString();
+  }
+  function luma(hex) { const c = new T.Color(hex); return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b; }
+  function paintWood(g, w, h) {
+    g.fillStyle = '#C8935A';
     g.fillRect(0, 0, w, h);
     let seed = 7;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    const plank = 18;
+    const plank = 9;                        // listones agrupados (≈ 37 cm)
     for (let x = 0; x < w; x += plank) {
       let y = -rnd() * 120;
       while (y < h) {
-        const len = 90 + rnd() * 140;
+        const len = 90 + rnd() * 150;
         const tone = rnd();
-        g.fillStyle = `rgba(${tone > .5 ? '255,236,200' : '120,72,28'},${0.05 + rnd() * 0.08})`;
+        g.fillStyle = tone > .5 ? `rgba(255,226,168,${0.03 + rnd() * 0.11})` : `rgba(104,56,18,${0.02 + rnd() * 0.08})`;
         g.fillRect(x, y, plank, len);
-        // veta fina a lo largo de la tabla
-        g.fillStyle = 'rgba(110,64,22,.07)';
-        for (let k = 0; k < 3; k++) g.fillRect(x + 3 + rnd() * 12, y, 0.6, len);
-        g.fillStyle = 'rgba(90,52,18,.16)';
-        g.fillRect(x, y, plank, 1);
+        // vetas finas a lo largo de la tabla
+        g.fillStyle = 'rgba(96,52,16,.09)';
+        for (let k = 0; k < 2; k++) g.fillRect(x + 1.5 + rnd() * 6, y + rnd() * 10, 0.5, len * (0.5 + rnd() * 0.5));
+        g.fillStyle = 'rgba(70,36,10,.26)';
+        g.fillRect(x, y, plank, 0.7);
         y += len;
       }
-      g.fillStyle = 'rgba(90,52,18,.14)';
-      g.fillRect(x, 0, 1, h);
+      g.fillStyle = 'rgba(70,36,10,.2)';
+      g.fillRect(x, 0, 0.6, h);
     }
-    g.fillStyle = 'rgba(178, 62, 28, .78)';
-    g.fillRect(HOOP.x - 50, 30, 100, 170);
-    g.strokeStyle = 'rgba(255,255,255,.92)';
-    g.lineWidth = 3;
-    g.strokeRect(6, 6, w - 12, h - 12);
+  }
+  // Texto sobre un arco (centro cx, cy; radio r), centrado en el ángulo a0 (−π/2 = arriba).
+  function arcText(g, text, cx, cy, r, a0, flip) {
+    let total = 0;
+    const ws = [];
+    for (const ch of text) { const wch = g.measureText(ch).width + 1.2; ws.push(wch); total += wch; }
+    let a = a0 - (flip ? -1 : 1) * total / r / 2;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    let i = 0;
+    for (const ch of text) {
+      const da = ws[i++] / r * (flip ? -1 : 1);
+      a += da / 2;
+      g.save();
+      g.translate(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      g.rotate(a + (flip ? -Math.PI / 2 : Math.PI / 2));
+      g.fillText(ch, 0, 0);
+      g.restore();
+      a += da;
+    }
+  }
+  function paintCourt(g, w, h, colors, far) {
+    const home = (colors && colors[0]) || '#B3202A', home2 = (colors && colors[1]) || '#F5F0E6';
+    // el segundo color se usa para el logo: si se parece demasiado al primero, va crema
+    const ink = Math.abs(luma(home) - luma(home2)) < 0.18 ? (luma(home) > 0.5 ? '#1B2238' : '#F7EEDF') : home2;
+    paintWood(g, w, h);
+    const R = RANGE, side = 24;
+    const a = Math.asin((side - HOOP.x) / R);
+    const yJoin = HOOP.y + Math.cos(a) * R;
+    const arcPath = () => {
+      g.beginPath();
+      g.moveTo(side, 0); g.lineTo(side, yJoin);
+      g.arc(HOOP.x, HOOP.y, R, Math.PI / 2 - a, Math.PI / 2 + a, true);
+      g.lineTo(w - side, 0);
+    };
+    // fuera de la línea de triple la madera va teñida un tono más oscura
+    g.save();
+    g.beginPath(); g.rect(0, 0, w, h); arcPath(); g.closePath();
+    g.fillStyle = 'rgba(92,46,12,.20)'; g.fill('evenodd');
+    g.restore();
+    // zona pintada con el color del local (un poco apagado para que no compita con las camisetas)
+    const paint = shade(home, -0.14);
+    g.globalAlpha = 0.9; g.fillStyle = paint;
+    g.fillRect(HOOP.x - 50, 6, 100, 194);
+    g.globalAlpha = 1;
+    // veteado de la madera asomando bajo la pintura
+    g.fillStyle = 'rgba(0,0,0,.05)';
+    for (let x = HOOP.x - 50; x < HOOP.x + 50; x += 12) g.fillRect(x, 6, 0.6, 194);
+    // círculo central (centrado en la línea de media cancha, y = h) con el logo del juego
+    const cy = h, flip = far ? Math.PI : 0;
+    g.save();
+    g.translate(HOOP.x, cy); g.rotate(flip);
+    g.beginPath(); g.arc(0, 0, 50, 0, Math.PI * 2);
+    g.globalAlpha = 0.92; g.fillStyle = paint; g.fill(); g.globalAlpha = 1;
+    g.beginPath(); g.arc(0, 0, 41, 0, Math.PI * 2); g.lineWidth = 2; g.strokeStyle = ink; g.stroke();
+    // pelota estilizada
+    g.beginPath(); g.arc(0, 0, 30, 0, Math.PI * 2); g.fillStyle = ink; g.fill();
+    g.strokeStyle = paint; g.lineWidth = 2.6; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(-30, 0); g.lineTo(30, 0); g.stroke();
+    g.beginPath(); g.moveTo(0, -30); g.lineTo(0, 30); g.stroke();
+    g.beginPath(); g.arc(-39, 0, 30, -0.7, 0.7); g.stroke();
+    g.beginPath(); g.arc(39, 0, 30, Math.PI - 0.7, Math.PI + 0.7); g.stroke();
+    // nombre del juego en arco: arriba (hacia el aro) y abajo
+    g.fillStyle = paint;
+    g.font = '900 24px "Barlow Condensed", "Arial Narrow", Impact, sans-serif';
+    arcText(g, 'JUGADA', 0, 0, 68, -Math.PI / 2, false);
+    arcText(g, 'MAESTRA', 0, 0, 70, Math.PI / 2, true);
+    g.fillStyle = ink;
+    g.font = '900 9px "Barlow Condensed", "Arial Narrow", Impact, sans-serif';
+    arcText(g, '★  LIGA MAESTRA  ★', 0, 0, 45.2, -Math.PI / 2, false);
+    arcText(g, '★  LIGA MAESTRA  ★', 0, 0, 45.6, Math.PI / 2, true);
+    g.restore();
+    // líneas
+    g.strokeStyle = 'rgba(255,255,255,.95)';
+    g.lineWidth = 3; g.lineCap = 'butt';
+    g.beginPath(); g.moveTo(6, h); g.lineTo(6, 6); g.lineTo(w - 6, 6); g.lineTo(w - 6, h); g.stroke();   // laterales y fondo
+    g.beginPath(); g.moveTo(6, h); g.lineTo(w - 6, h); g.stroke();                                    // media cancha (mitad en cada textura)
     g.strokeRect(HOOP.x - 50, 6, 100, 194);
     g.beginPath(); g.arc(HOOP.x, 200, 50, 0, Math.PI); g.stroke();
     g.setLineDash([8, 8]);
     g.beginPath(); g.arc(HOOP.x, 200, 50, Math.PI, 2 * Math.PI); g.stroke();
     g.setLineDash([]);
-    const R = RANGE;
-    const side = 24;
-    const a = Math.asin((side - HOOP.x) / R);
-    const yJoin = HOOP.y + Math.cos(a) * R;
     g.beginPath();
     g.moveTo(side, 6); g.lineTo(side, yJoin);
     g.arc(HOOP.x, HOOP.y, R, Math.PI / 2 - a, Math.PI / 2 + a, true);
     g.lineTo(w - side, 6);
     g.stroke();
-    g.beginPath(); g.moveTo(6, h - 6); g.lineTo(w - 6, h - 6); g.stroke();
-    g.beginPath(); g.arc(HOOP.x, h - 6, 50, Math.PI, 2 * Math.PI); g.stroke();
+    g.beginPath(); g.arc(HOOP.x, h, 50, Math.PI, 2 * Math.PI); g.stroke();
+    // marcas de rebote a los lados de la zona
+    g.lineWidth = 2.4;
+    for (const y of [78, 100, 132, 164]) { g.beginPath(); g.moveTo(HOOP.x - 50, y); g.lineTo(HOOP.x - 56, y); g.moveTo(HOOP.x + 50, y); g.lineTo(HOOP.x + 56, y); g.stroke(); }
   }
-  function courtTexture(k, aniso) {
-    return canvasTex(COURT.w * k, COURT.h * k, (g) => { g.setTransform(k, 0, 0, k, 0, 0); paintCourt(g, COURT.w, COURT.h); }, { aniso });
+  // Lienzo + textura de media cancha a k píxeles por unidad; repaint(colors) la vuelve a pintar.
+  function courtLayer(k, aniso, far) {
+    const c = document.createElement('canvas');
+    c.width = COURT.w * k; c.height = COURT.h * k;
+    const tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace; tex.anisotropy = aniso;
+    const repaint = (colors) => {
+      const g = c.getContext('2d');
+      g.setTransform(k, 0, 0, k, 0, 0);
+      paintCourt(g, COURT.w, COURT.h, colors, far);
+      tex.needsUpdate = true;
+    };
+    return { tex, repaint };
   }
 
   // ------------------------------------------------------------------ Textura de la pelota
   function ballTexture() {
     return canvasTex(512, 256, (g, w, h) => {
       const grd = g.createLinearGradient(0, 0, 0, h);
-      grd.addColorStop(0, '#F08A3C'); grd.addColorStop(.5, '#E8702A'); grd.addColorStop(1, '#C9551A');
+      grd.addColorStop(0, '#F58A3A'); grd.addColorStop(.5, '#EE6F22'); grd.addColorStop(1, '#D4581A');
       g.fillStyle = grd; g.fillRect(0, 0, w, h);
-      // poros
+      // granulado del cuero: puntos claros y oscuros
       const rnd = lcg(11);
-      g.fillStyle = 'rgba(80,30,5,.12)';
-      for (let i = 0; i < 2500; i++) g.fillRect(rnd() * w, rnd() * h, 1.5, 1.5);
-      g.strokeStyle = '#1E0C04'; g.lineWidth = 5; g.lineCap = 'round';
-      // ecuador y dos meridianos
-      g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
-      for (const u of [0.25, 0.75]) { g.beginPath(); g.moveTo(u * w, 0); g.lineTo(u * w, h); g.stroke(); }
-      // dos gajos curvos
-      for (const s of [1, -1]) {
-        g.beginPath();
-        for (let i = 0; i <= 200; i++) {
-          const u = i / 200;
-          const v = 0.5 + s * 0.27 * Math.sin(u * Math.PI * 2);
-          if (i === 0) g.moveTo(u * w, v * h); else g.lineTo(u * w, v * h);
-        }
-        g.stroke();
+      for (let i = 0; i < 5200; i++) {
+        g.fillStyle = rnd() > 0.5 ? 'rgba(96,34,6,.20)' : 'rgba(255,190,120,.16)';
+        g.beginPath(); g.arc(rnd() * w, rnd() * h, 0.9 + rnd() * 0.7, 0, 6.3); g.fill();
       }
-    });
+      // canales negros: ecuador, un meridiano completo y dos gajos curvos, con un filo claro al lado
+      const seams = (color, lw, dy) => {
+        g.strokeStyle = color; g.lineWidth = lw; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(0, h / 2 + dy); g.lineTo(w, h / 2 + dy); g.stroke();
+        for (const u of [0.25, 0.75]) { g.beginPath(); g.moveTo(u * w + dy, 0); g.lineTo(u * w + dy, h); g.stroke(); }
+        for (const sgn of [1, -1]) {
+          g.beginPath();
+          for (let i = 0; i <= 200; i++) {
+            const u = i / 200;
+            const v = 0.5 + sgn * 0.27 * Math.sin(u * Math.PI * 2);
+            if (i === 0) g.moveTo(u * w, v * h + dy); else g.lineTo(u * w, v * h + dy);
+          }
+          g.stroke();
+        }
+      };
+      seams('rgba(255,170,100,.35)', 9, 1.5);
+      seams('#160803', 6, 0);
+    }, { aniso: 4 });
   }
 
   // ------------------------------------------------------------------ Carteles LED (marcas ficticias)
@@ -160,14 +267,24 @@
       const n = BRANDS.length, pw = W / n;
       for (let i = 0; i < n; i++) {
         const [name, bg, fg] = BRANDS[i];
-        g.fillStyle = bg; g.fillRect(i * pw, 0, pw, H);
-        g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(i * pw, 0, pw, H / 2);
+        const grd = g.createLinearGradient(0, 0, 0, H);
+        grd.addColorStop(0, shade(bg, 0.16)); grd.addColorStop(0.55, bg); grd.addColorStop(1, shade(bg, -0.25));
+        g.fillStyle = grd; g.fillRect(i * pw, 0, pw, H);
+        // franjas diagonales tenues y rombos a los lados: pantalla LED, no un cartel pintado
+        g.save(); g.beginPath(); g.rect(i * pw, 0, pw, H); g.clip();
+        g.fillStyle = 'rgba(255,255,255,.06)';
+        for (let k = -2; k < 8; k++) { g.beginPath(); g.moveTo(i * pw + k * 40, H); g.lineTo(i * pw + k * 40 + 34, 0); g.lineTo(i * pw + k * 40 + 50, 0); g.lineTo(i * pw + k * 40 + 16, H); g.fill(); }
+        g.fillStyle = fg;
+        for (const x of [i * pw + 14, i * pw + pw - 14]) { g.beginPath(); g.moveTo(x, H / 2 - 9); g.lineTo(x + 7, H / 2); g.lineTo(x, H / 2 + 9); g.lineTo(x - 7, H / 2); g.fill(); }
+        g.restore();
         g.fillStyle = fg; g.textAlign = 'center'; g.textBaseline = 'middle';
-        fitText(g, name, pw - 24, 44, 'bold', '"Barlow Condensed", "Arial Narrow", Impact, sans-serif');
+        fitText(g, name, pw - 60, 46, 'bold', '"Barlow Condensed", "Arial Narrow", Impact, sans-serif');
         g.fillText(name, i * pw + pw / 2, H / 2 + 2);
-        g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(i * pw + pw - 2, 0, 2, H);
       }
-    }, { repeat: true });
+      // trama de píxeles LED (líneas oscuras finas)
+      g.fillStyle = 'rgba(0,0,0,.16)';
+      for (let y = 3; y < H; y += 4) g.fillRect(0, y, W, 1);
+    }, { repeat: true, aniso: 4 });
   }
   // Pancarta grande para la pared de la tribuna
   // Elige el tamaño de fuente más grande (≤ max) con el que el texto entra en maxW.
@@ -184,17 +301,35 @@
       g.fillText(text, w / 2, h / 2 + 8);
     });
   }
-  function scoreboardTexture() {
-    return canvasTex(512, 256, (g, w, h) => {
-      g.fillStyle = '#05070D'; g.fillRect(0, 0, w, h);
-      g.fillStyle = '#F26B1D'; g.textAlign = 'center'; g.textBaseline = 'middle';
-      fitText(g, 'JUGADA MAESTRA', w - 40, 60, 'bold', '"Barlow Condensed", Impact, sans-serif');
-      g.fillText('JUGADA MAESTRA', w / 2, 52);
-      g.fillStyle = '#FFC53D'; g.font = 'bold 120px "Barlow Condensed", Impact, sans-serif';
-      g.fillText('0   :   0', w / 2, 160);
-      g.fillStyle = '#F7EEDF'; g.font = 'bold 34px "Barlow Condensed", Impact, sans-serif';
-      g.fillText('LOCAL                         VISITA', w / 2, 232);
-    });
+  // Pantalla del cubo marcador: nombre del juego arriba y tanteador con los colores de los equipos.
+  function paintScoreboard(g, w, h, teams) {
+    const bgd = g.createLinearGradient(0, 0, 0, h);
+    bgd.addColorStop(0, '#0B1630'); bgd.addColorStop(1, '#04060C');
+    g.fillStyle = bgd; g.fillRect(0, 0, w, h);
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const fam = '"Barlow Condensed", "Arial Narrow", Impact, sans-serif';
+    g.font = `900 78px ${fam}`;
+    const wj = g.measureText('JUGADA ').width, wm = g.measureText('MAESTRA').width, x0 = (w - wj - wm) / 2;
+    g.textAlign = 'left';
+    g.fillStyle = '#F7EEDF'; g.fillText('JUGADA ', x0, 66);
+    g.fillStyle = '#F26B1D'; g.fillText('MAESTRA', x0 + wj, 66);
+    g.fillStyle = '#F26B1D'; g.fillRect(40, 116, w - 80, 5);
+    // tanteador
+    const home = (teams && teams[0]) || ['#B3202A', '#F5F0E6'], away = (teams && teams[1]) || ['#1C1C1C', '#E8B04B'];
+    const box = (x, c, label, pts) => {
+      g.fillStyle = c[0]; g.fillRect(x, 138, 150, 98);
+      g.strokeStyle = c[1]; g.lineWidth = 5; g.strokeRect(x + 2.5, 140.5, 145, 93);
+      g.textAlign = 'center';
+      g.fillStyle = luma(c[0]) > 0.6 ? '#101522' : '#FFFFFF';
+      g.font = `bold 26px ${fam}`; g.fillText(label, x + 75, 160);
+      g.font = `900 64px ${fam}`; g.fillText(pts, x + 75, 204);
+    };
+    box(28, home, 'LOCAL', '88'); box(w - 178, away, 'VISITA', '86');
+    g.textAlign = 'center';
+    g.fillStyle = '#FFC53D'; g.font = `900 58px ${fam}`; g.fillText('0:24', w / 2, 178);
+    g.fillStyle = '#9FB4DD'; g.font = `bold 26px ${fam}`; g.fillText('4.º CUARTO', w / 2, 222);
+    g.fillStyle = 'rgba(0,0,0,.14)';
+    for (let y = 2; y < h; y += 4) g.fillRect(0, y, w, 1);
   }
   function haloTexture() {
     const c = document.createElement('canvas'); c.width = c.height = 128;
@@ -393,12 +528,12 @@
     renderer.shadowMap.type = T.PCFSoftShadowMap;
     renderer.outputColorSpace = T.SRGBColorSpace;
     renderer.toneMapping = T.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.0;
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
     const scene = new T.Scene();
-    scene.background = new T.Color(0x06080f);
-    scene.fog = new T.Fog(0x0a0d18, 700, 2600);
+    scene.background = new T.Color(0x04060c);
+    scene.fog = new T.Fog(0x080b16, 620, 2400);
 
     const camera = new T.PerspectiveCamera(FOV, 390 / 560, 2, 3200);
     camera.position.set(0, 160, 520);
@@ -413,9 +548,11 @@
     const overlayGroup = new T.Group(); scene.add(overlayGroup);
 
     // ---------------------------------------------------------------- Luces
-    const hemi = new T.HemisphereLight(0xcfe0ff, 0x6b4a2a, 1.25);
+    // Ambiente de pabellón: poca luz general (las tribunas altas quedan en penumbra) y los focos
+    // concentrados sobre la cancha (luz principal cálida con sombras + relleno frío + dos puntos).
+    const hemi = new T.HemisphereLight(0xb9cbf5, 0x70502c, 0.78);
     scene.add(hemi);
-    const sun = new T.DirectionalLight(0xfff2e0, 2.6);
+    const sun = new T.DirectionalLight(0xfff0dc, 2.75);
     sun.position.set(-170, 420, 170);
     sun.target.position.set(0, 0, 0);
     sun.castShadow = true;
@@ -426,34 +563,107 @@
     sun.shadow.radius = 2;
     scene.add(sun); scene.add(sun.target);
     // relleno frío desde el lado opuesto (sin sombra) para que las caras en sombra no queden negras
-    const fill = new T.DirectionalLight(0xbfd4ff, 0.55);
+    const fill = new T.DirectionalLight(0xa9c4ff, 0.6);
     fill.position.set(220, 300, -260);
     scene.add(fill);
     // puntos cálidos: reflejo de los focos sobre el parqué
-    const warm1 = new T.PointLight(0xffd9a0, 260000, 900, 2); warm1.position.set(90, 300, -120); scene.add(warm1);
-    const warm2 = new T.PointLight(0xffd9a0, 200000, 900, 2); warm2.position.set(-110, 300, 190); scene.add(warm2);
+    const warm1 = new T.PointLight(0xffd9a0, 230000, 900, 2); warm1.position.set(90, 300, -120); scene.add(warm1);
+    const warm2 = new T.PointLight(0xffd9a0, 170000, 900, 2); warm2.position.set(-110, 300, 190); scene.add(warm2);
+
+    // ---------------------------------------------------------------- Pisos con brillo de laca
+    // El parqué y el piso perimetral reflejan, calculado en el shader (sin render extra ni texturas de
+    // entorno): los focos del techo, los carteles LED de las cuatro paredes (con su desplazamiento) y
+    // una banda tenue con el color de la tribuna. La intensidad sigue a Fresnel: casi nada mirando
+    // desde arriba, marcado al ras del piso hacia el fondo.
+    const ledTex = track(ledTexture());
+    // brillo difuso de los carteles: un texel por marca (el filtro lineal funde los colores vecinos)
+    const ledGlowTex = track(canvasTex(BRANDS.length, 1, (g) => {
+      BRANDS.forEach((b, i) => { g.fillStyle = b[1]; g.fillRect(i, 0, 1, 1); g.globalAlpha = 0.3; g.fillStyle = b[2]; g.fillRect(i, 0, 1, 1); g.globalAlpha = 1; });
+    }, { repeat: true }));
+    ledGlowTex.generateMipmaps = false; ledGlowTex.minFilter = T.LinearFilter;
+    const floorU = { uLed: { value: ledGlowTex }, uLedOff: { value: 0 }, uCrowdCol: { value: new T.Color(0.3, 0.3, 0.34) } };
+    const LAMP_Y = ROOF_Y - 44;
+    function glossyFloor(mat, kRefl, kPool) {
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uLed = floorU.uLed; sh.uniforms.uLedOff = floorU.uLedOff; sh.uniforms.uCrowdCol = floorU.uCrowdCol;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', `#include <common>
+            varying vec3 vWPos;
+            uniform sampler2D uLed; uniform float uLedOff; uniform vec3 uCrowdCol;`)
+          .replace('#include <opaque_fragment>', `
+            {
+              vec3 vd = normalize(vWPos - cameraPosition);
+              vec3 rr = vec3(vd.x, abs(vd.y) + 1e-4, vd.z);
+              float cosT = clamp(-vd.y, 0.0, 1.0);
+              float fres = 0.045 + 0.955 * pow(1.0 - cosT, 3.2);
+              // pared que alcanza el rayo reflejado
+              float tx = (249.7 - sign(rr.x) * vWPos.x) / (abs(rr.x) + 1e-4);
+              float tz = rr.z > 0.0 ? (969.7 - vWPos.z) / (rr.z + 1e-4) : (vWPos.z + 369.7) / (1e-4 - rr.z);
+              float tw = min(tx, tz);
+              vec3 hit = vWPos + rr * tw;
+              float u = tx < tz
+                ? (rr.x < 0.0 ? (970.0 - hit.z) / 520.0 + 0.0503 : (hit.z + 370.0) / 520.0 + 0.5497)
+                : (rr.z < 0.0 ? (hit.x + 250.0) / 520.0 - 0.3697 : (250.0 - hit.x) / 520.0 + 0.9697);
+              // cartel LED: banda de 11,5 de alto, estirada hacia el observador (reflejo difuso del barniz)
+              float band = smoothstep(0.0, 3.5, hit.y) * (1.0 - smoothstep(12.0, 19.0 + tw * 0.07, hit.y));
+              vec3 refl = (texture2D(uLed, vec2(u + uLedOff, 0.5)).rgb * 1.5 + 0.04) * band;
+              // tribuna con público: banda tenue encima de los carteles
+              refl += uCrowdCol * smoothstep(15.0, 60.0, hit.y) * (1.0 - smoothstep(120.0, 360.0, hit.y)) * 0.55;
+              // focos del techo (rejilla: x = ±170, z múltiplo de 300)
+              float tc = ${LAMP_Y.toFixed(1)} / rr.y;
+              vec2 hc = vWPos.xz + rr.xz * tc;
+              float lx = abs(hc.x) - 170.0, lz = mod(clamp(hc.y, -449.0, 1049.0) + 150.0, 300.0) - 150.0;
+              float d2 = lx * lx + lz * lz;
+              float lamp = exp(-d2 / 1300.0) * 2.8 + exp(-d2 / 14000.0) * 0.36;
+              refl += vec3(1.0, 0.93, 0.8) * lamp * step(tc, tw);
+              outgoingLight += refl * fres * ${kRefl.toFixed(2)};
+              // la luz de los focos cae hacia los bordes del piso
+              float edge = max(smoothstep(190.0, 250.0, abs(vWPos.x)), 1.0 - smoothstep(-370.0, -310.0, vWPos.z));
+              outgoingLight *= 1.0 - edge * ${kPool.toFixed(2)};
+            }
+            #include <opaque_fragment>`);
+      };
+      mat.customProgramCacheKey = () => 'piso' + kRefl + '_' + kPool;
+    }
 
     // ---------------------------------------------------------------- Cancha
-    const courtMat = track(new T.MeshStandardMaterial({ map: track(courtTexture(3, maxAniso)), roughness: 0.42, metalness: 0.0 }));
+    let teams = [['#B3202A', '#F5F0E6'], ['#1C1C1C', '#E8B04B']];
+    const courtNear = courtLayer(3, maxAniso, false), courtFarL = courtLayer(2, Math.min(8, maxAniso), true);
+    track(courtNear.tex); track(courtFarL.tex);
+    let courtKey = '';
+    function repaintCourts() {
+      const key = teams[0].join('|');
+      if (key === courtKey) return;
+      courtKey = key;
+      courtNear.repaint(teams[0]); courtFarL.repaint(teams[0]);
+    }
+    repaintCourts();
+    const courtMat = track(new T.MeshStandardMaterial({ map: courtNear.tex, roughness: 0.34, metalness: 0.0 }));
+    glossyFloor(courtMat, 1.0, 0.0);                    // (reflejo, caída de luz hacia el borde)
     const courtGeo = track(new T.PlaneGeometry(COURT.w, COURT.h));
     const court = new T.Mesh(courtGeo, courtMat);
     court.rotation.x = -Math.PI / 2;
     court.receiveShadow = true;
     world.add(court);
-    // mitad de cancha del fondo (espejada, textura chica)
-    const farMat = track(new T.MeshStandardMaterial({ map: track(courtTexture(1, 4)), roughness: 0.45 }));
+    // mitad de cancha del fondo (la misma pintura, girada 180°)
+    const farMat = track(new T.MeshStandardMaterial({ map: courtFarL.tex, roughness: 0.36 }));
+    glossyFloor(farMat, 1.0, 0.0);
     const farCourt = new T.Mesh(courtGeo, farMat);
     farCourt.rotation.set(-Math.PI / 2, 0, Math.PI);
     farCourt.position.z = COURT.h;
     farCourt.receiveShadow = true;
     world.add(farCourt);
-    // piso perimetral (goma azul oscura) y banda clara
-    const apronMat = track(new T.MeshStandardMaterial({ color: 0x1b2742, roughness: 0.85 }));
+    // piso perimetral: goma oscura con un tinte del color del local (se recolorea en setTeams)
+    const apronMat = track(new T.MeshStandardMaterial({ color: 0x1b2742, roughness: 0.5 }));
+    glossyFloor(apronMat, 0.85, 0.55);
     const apron = new T.Mesh(track(new T.PlaneGeometry(BOWL.x * 2, BOWL.z1 - BOWL.z0)), apronMat);
     apron.rotation.x = -Math.PI / 2; apron.position.set(0, -0.25, (BOWL.z0 + BOWL.z1) / 2);
     apron.receiveShadow = true;
     world.add(apron);
-    const trimMat = track(new T.MeshStandardMaterial({ color: 0x3b4f80, roughness: 0.8 }));
+    const trimMat = track(new T.MeshStandardMaterial({ color: 0x3b4f80, roughness: 0.7 }));
     const trim = new T.Mesh(track(mergeGeoms([
       placed(new T.PlaneGeometry(COURT.w + 16, 4), 0, 0, -304), placed(new T.PlaneGeometry(COURT.w + 16, 4), 0, 0, 904),
       placed(new T.PlaneGeometry(4, COURT.h * 2 + 12), -186, 0, 300), placed(new T.PlaneGeometry(4, COURT.h * 2 + 12), 186, 0, 300),
@@ -483,16 +693,29 @@
         placed(new T.BoxGeometry(hx0 * 2, h, hz1 - hz0), cx, ym, cz + (hz0 + hz1) / 2),
       ];
     }
+    // Las tribunas se apagan con la altura: los focos apuntan a la cancha y arriba queda la penumbra.
+    function dimWithHeight(mat, k) {
+      mat.onBeforeCompile = (sh) => {
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying float vWY;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWY = (modelMatrix * vec4(transformed, 1.0)).y;');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', '#include <common>\nvarying float vWY;')
+          .replace('#include <color_fragment>', `#include <color_fragment>\ndiffuseColor.rgb *= mix(1.0, ${k.toFixed(2)}, smoothstep(30.0, 330.0, vWY));`);
+      };
+      mat.customProgramCacheKey = () => 'altura' + k;
+      return mat;
+    }
     const standParts = [];
     standParts.push(...ringBoxes(0, 10, 0, 16));                                  // pared frontal
     for (const r of ROWS) standParts.push(...ringBoxes(r.off, r.off + r.depth, 0, r.y));
     standParts.push(...ringBoxes(ROWS.walkOff, ROWS[13].off, 0, ROWS.walkY));     // pasillo
     standParts.push(...ringBoxes(ROWS.topOff, ROWS.topOff + 20, 0, ROWS.topY + 64)); // pared superior
-    const standMat = track(new T.MeshStandardMaterial({ color: 0x3e4453, roughness: 0.95 }));
+    const standMat = dimWithHeight(track(new T.MeshStandardMaterial({ color: 0x343a4a, roughness: 0.95 })), 0.3);
     const stands = new T.Mesh(track(mergeGeoms(standParts)), standMat);
     world.add(stands);
     // pared frontal oscura + baranda del pasillo + baranda superior (merged, material oscuro)
-    const darkMat = track(new T.MeshStandardMaterial({ color: 0x1a2238, roughness: 0.7 }));
+    const darkMat = dimWithHeight(track(new T.MeshStandardMaterial({ color: 0x18203a, roughness: 0.7 })), 0.45);
     const railParts = ringBoxes(ROWS.walkOff - 1.5, ROWS.walkOff + 1.5, ROWS.walkY, ROWS.walkY + 10)
       .concat(ringBoxes(-1.5, 0, 15.2, 16.6))
       .concat(ringBoxes(ROWS[13].off - 2.5, ROWS[13].off - 0.5, ROWS[13].y - 11, ROWS[13].y + 10));
@@ -529,11 +752,10 @@
           if (rise) parts.push(placed(new T.BoxGeometry(22, rise / 2, r.depth / 2), x, r.y + rise / 4, cz + sz * (hz + r.depth / 4)));
         }
       });
-      world.add(new T.Mesh(track(mergeGeoms(parts)), track(new T.MeshStandardMaterial({ color: 0x8a909c, roughness: 0.9 }))));
+      world.add(new T.Mesh(track(mergeGeoms(parts)), dimWithHeight(track(new T.MeshStandardMaterial({ color: 0x7c8494, roughness: 0.9 })), 0.3)));
     }
 
     // carteles LED sobre la pared frontal (una sola malla, una textura)
-    const ledTex = track(ledTexture());
     const ledMat = track(new T.MeshBasicMaterial({ map: ledTex, toneMapped: false }));
     {
       const cz = (BOWL.z0 + BOWL.z1) / 2, L = BOWL.z1 - BOWL.z0, Wd = BOWL.x * 2;
@@ -632,7 +854,7 @@
         .replace('#include <common>', `#include <common>
           attribute vec4 aData; attribute vec3 aCol2;
           uniform float uTime; uniform float uCheer;
-          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying float vShade;`)
+          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying vec3 vShade; varying vec3 vFlash;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
           float sd = aData.y, ph = sd * 40.0;
           // de pie: unos pocos animan solos de a ratos; al convertir se para casi toda la hinchada local
@@ -665,8 +887,12 @@
           vHair = hc < 0.45 ? vec3(0.018, 0.013, 0.01) : hc < 0.72 ? vec3(0.07, 0.035, 0.015)
                 : hc < 0.84 ? vec3(0.42, 0.28, 0.12) : hc < 0.92 ? vec3(0.32, 0.30, 0.29) : vec3(0.30, 0.09, 0.03);
           vHair *= 2.2;
-          // luz: un poco más oscuro arriba (lejos de los focos) y leve variación por persona
-          vShade = (0.9 + fract(sd * 23.1) * 0.16) * mix(1.0, 0.8, smoothstep(60.0, 380.0, ic.y));`);
+          // luz: las filas bajas reciben el rebote cálido de la cancha; hacia arriba, penumbra azulada
+          float up = smoothstep(20.0, 340.0, ic.y);
+          vShade = (0.88 + fract(sd * 23.1) * 0.2) * mix(vec3(1.1, 1.04, 0.96), vec3(0.3, 0.35, 0.47), up);
+          // festejo: destellos de cámaras repartidos por la tribuna (uno cada tanto por persona)
+          float fl = step(0.0, uCheer) * step(uCheer, 5.0) * step(0.972, fract(sd * 61.7 + floor(uTime * 12.0) * 0.371));
+          vFlash = vec3(uv.x - 0.5, uv.y - 0.6, fl);`);
       // uv del atlas: celda (variante, sentado/de pie) calculada en begin_vertex
       sh.vertexShader = sh.vertexShader.replace('#include <fog_vertex>', `#include <fog_vertex>
           #ifdef USE_MAP
@@ -674,7 +900,7 @@
           #endif`);
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
-          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying float vShade;`)
+          varying vec3 vShirt; varying vec3 vSec; varying vec3 vSkin; varying vec3 vHair; varying vec3 vShade; varying vec3 vFlash;`)
         .replace('#include <map_fragment>', `
           vec4 tc = texture2D(map, vMapUv);
           vec3 mk = texture2D(map, vMapUv - vec2(0.0, 0.5)).rgb;
@@ -683,6 +909,7 @@
           float wt = clamp(wHair + wShirt + wSec + wSkin, 0.0, 1.0);
           vec3 tint = vShirt * wShirt + vSec * wSec + vSkin * wSkin + vHair * wHair;
           diffuseColor.rgb = (tc.rgb * (1.0 - wt) + tint * tc.r * 1.3) * vShade;
+          diffuseColor.rgb += vec3(1.0, 0.98, 0.9) * vFlash.z * (1.0 - smoothstep(0.02, 0.12, length(vFlash.xy * vec2(1.0, 2.0)))) * 2.6;
           diffuseColor.a = tc.a;`)
         .replace('#include <color_fragment>', '');
     };
@@ -711,7 +938,6 @@
       world.add(mesh);
       return mesh;
     });
-    let teams = [['#B3202A', '#F5F0E6'], ['#1C1C1C', '#E8B04B']];
     function colorCrowd() {
       const col = new T.Color(), c2 = new T.Color(), rnd = lcg(17);
       const home = new T.Color(teams[0][0]), home2 = new T.Color(teams[0][1]);
@@ -752,7 +978,7 @@
     colorCrowd();
     // Festejo: la hinchada local se para, salta y levanta los brazos unos segundos.
     let cheerAt = -1e3, clock = 0;
-    function cheer() { cheerAt = clock; }
+    function cheer() { cheerAt = clock; }                     // (los papelitos se encienden en update)
 
     // banderines sobre la baranda del pasillo (triángulos alternados con los colores del local)
     const pennantMat = track(new T.MeshBasicMaterial({ vertexColors: true, side: T.DoubleSide }));
@@ -802,27 +1028,102 @@
       world.add(new T.Mesh(track(mergeGeoms(parts)), trussMat));
     }
     const haloTex = track(haloTexture());
-    const haloMat = track(new T.SpriteMaterial({ map: haloTex, color: 0xfff1d6, transparent: true, blending: T.AdditiveBlending, depthWrite: false, fog: false }));
     {
-      const cz = (BOWL.z0 + BOWL.z1) / 2;
+      const cz = (BOWL.z0 + BOWL.z1) / 2, pos = [], cor = [], idx = [];
+      let n = 0;
       for (let i = -2; i <= 2; i++) for (const x of [-170, 170]) {
-        const s = new T.Sprite(haloMat); s.position.set(x, ROOF_Y - 44, cz + i * 300); s.scale.set(90, 90, 1); world.add(s);
+        for (const c of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { pos.push(x, ROOF_Y - 44, cz + i * 300); cor.push(c[0], c[1]); }
+        idx.push(n, n + 1, n + 2, n, n + 2, n + 3); n += 4;
       }
+      const g = track(new T.BufferGeometry());
+      g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      g.setAttribute('aCorner', new T.Float32BufferAttribute(cor, 2));
+      g.setIndex(idx);
+      g.boundingSphere = new T.Sphere(new T.Vector3(0, ROOF_Y - 44, cz), 700);
+      const haloMat = track(new T.ShaderMaterial({
+        uniforms: { map: { value: haloTex } },
+        vertexShader: `attribute vec2 aCorner; varying vec2 vUv;
+          void main() { vUv = aCorner * 0.5 + 0.5; vec4 mv = modelViewMatrix * vec4(position, 1.0); mv.xy += aCorner * 62.0; gl_Position = projectionMatrix * mv; }`,
+        fragmentShader: `uniform sampler2D map; varying vec2 vUv;
+          void main() { vec4 t = texture2D(map, vUv); gl_FragColor = vec4(t.rgb * vec3(1.0, 0.95, 0.84) * t.a * 1.25, 1.0); }`,
+        transparent: true, blending: T.AdditiveBlending, depthWrite: false,
+      }));
+      const halos = new T.Mesh(g, haloMat);
+      halos.renderOrder = 5;
+      world.add(halos);
     }
+    // Haces de los focos: conos aditivos muy tenues (una malla). Solo se dibujan en los planos de
+    // ambiente (portada y festejo); durante la jugada no, para no velar la cancha ni gastar relleno.
+    const beams = (() => {
+      const cz = (BOWL.z0 + BOWL.z1) / 2, parts = [];
+      for (let i = -2; i <= 1; i++) for (const x of [-170, 170]) {
+        const cone = new T.CylinderGeometry(10, 120, ROOF_Y - 50, 20, 1, true);
+        // el haz apunta hacia el eje de la cancha
+        const m = M4().makeTranslation(x * 0.62, (ROOF_Y - 50) / 2, cz + i * 300).multiply(M4().makeRotationZ(x > 0 ? -0.33 : 0.33));
+        parts.push({ geo: cone, matrix: m });
+      }
+      const mat = track(new T.ShaderMaterial({
+        vertexShader: `varying float vH; varying float vEdge;
+          void main() {
+            vec4 wp = modelMatrix * vec4(position, 1.0);
+            vH = clamp(wp.y / ${(ROOF_Y - 50).toFixed(1)}, 0.0, 1.0);
+            vec3 n = normalize(mat3(modelMatrix) * normal), v = normalize(cameraPosition - wp.xyz);
+            vEdge = abs(dot(n, v));
+            gl_Position = projectionMatrix * viewMatrix * wp;
+          }`,
+        fragmentShader: `varying float vH; varying float vEdge;
+          void main() {
+            float a = pow(vEdge, 1.6) * (0.012 + 0.07 * vH * vH) * smoothstep(0.0, 0.12, vH);
+            gl_FragColor = vec4(vec3(1.0, 0.93, 0.78) * a, 1.0);
+          }`,
+        transparent: true, blending: T.AdditiveBlending, depthWrite: false, side: T.DoubleSide,
+      }));
+      const mesh = new T.Mesh(track(mergeGeoms(parts)), mat);
+      mesh.renderOrder = 7; mesh.visible = false;
+      world.add(mesh);
+      return mesh;
+    })();
+    // Cubo marcador colgante sobre el centro: cuatro pantallas con el nombre del juego y el tanteador
+    // (colores de los equipos, se repinta en setTeams), carcasa, anillo LED inferior y cables. En el
+    // juego cuelga alto (nunca tapa la cancha); en la portada baja para entrar en el plano general.
+    const sbCanvas = document.createElement('canvas'); sbCanvas.width = 512; sbCanvas.height = 256;
+    const sbTex = track(new T.CanvasTexture(sbCanvas)); sbTex.colorSpace = T.SRGBColorSpace; sbTex.anisotropy = 4;
+    function repaintScoreboard() { paintScoreboard(sbCanvas.getContext('2d'), 512, 256, teams); sbTex.needsUpdate = true; }
+    repaintScoreboard();
+    const cube = new T.Group();
+    const CUBE_Y = { high: ROOF_Y - 58, low: 206 };
     {
-      const sbMat = track(new T.MeshBasicMaterial({ map: track(scoreboardTexture()), toneMapped: false }));
-      const sb = new T.Mesh(track(new T.BoxGeometry(110, 55, 110)), [sbMat, sbMat, darkMat, darkMat, sbMat, sbMat]);
-      sb.position.set(0, ROOF_Y - 62, (BOWL.z0 + BOWL.z1) / 2);
-      world.add(sb);
+      const half = 50, hgt = 50, tilt = 0.2, screens = [], body = [], ring = [];
+      for (let k = 0; k < 4; k++) {
+        const ry = k * Math.PI / 2;
+        // pantalla inclinada hacia abajo: gira sobre su borde superior
+        const m = M4().makeRotationY(ry).multiply(M4().makeTranslation(0, hgt / 2, half)).multiply(M4().makeRotationX(tilt)).multiply(M4().makeTranslation(0, -hgt / 2, 0));
+        screens.push({ geo: new T.PlaneGeometry(half * 2 - 6, hgt), matrix: m });
+        const rg = new T.PlaneGeometry(half * 2 - 14, 7), ruv = rg.attributes.uv;
+        for (let i = 0; i < ruv.count; i++) ruv.setX(i, ruv.getX(i) * 0.2 + k * 0.25);
+        ring.push({ geo: rg, matrix: M4().makeRotationY(ry).multiply(M4().makeTranslation(0, -hgt / 2 - 7, half - 8.5)) });
+        body.push({ geo: new T.BoxGeometry(4, hgt + 4, 4), matrix: M4().makeRotationY(ry).multiply(M4().makeTranslation(half - 6, 0, half - 6)).multiply(M4().makeRotationX(0)) });
+        body.push({ geo: new T.BoxGeometry(1.2, 260, 1.2), matrix: M4().makeRotationY(ry).multiply(M4().makeTranslation(half - 14, hgt / 2 + 130, half - 14)) });
+      }
+      body.push(placed(new T.BoxGeometry(half * 2 + 4, 5, half * 2 + 4), 0, hgt / 2 + 2, 0));
+      body.push(placed(new T.BoxGeometry(half * 2 - 28, hgt, half * 2 - 28), 0, 0, 0));
+      body.push(placed(new T.BoxGeometry(half * 2 - 18, 9, half * 2 - 18), 0, -hgt / 2 - 7, 0));
+      const sbMat = track(new T.MeshBasicMaterial({ map: sbTex, toneMapped: false }));
+      cube.add(new T.Mesh(track(mergeGeoms(screens)), sbMat));
+      cube.add(new T.Mesh(track(mergeGeoms(body)), track(new T.MeshStandardMaterial({ color: 0x10141f, roughness: 0.6, metalness: 0.3 }))));
+      cube.add(new T.Mesh(track(mergeGeoms(ring)), ledMat));
+      cube.position.set(0, CUBE_Y.high, (BOWL.z0 + BOWL.z1) / 2);
+      world.add(cube);
     }
 
     // ---------------------------------------------------------------- Túnel, bancos, mesa de control
+    const tunnelFrameMat = track(new T.MeshStandardMaterial({ color: teams[0][0], roughness: 0.6 }));
     {
       const tunnelMat = track(new T.MeshStandardMaterial({ color: 0x05060a, roughness: 1 }));
       const tunnel = new T.Mesh(track(new T.BoxGeometry(60, 30, 30)), tunnelMat);
       tunnel.position.set(-BOWL.x - 15, 15, 760);
       world.add(tunnel);
-      const tunnelFrame = new T.Mesh(track(new T.BoxGeometry(68, 36, 4)), track(new T.MeshStandardMaterial({ color: teams[0][0], roughness: 0.6 })));
+      const tunnelFrame = new T.Mesh(track(new T.BoxGeometry(68, 36, 4)), tunnelFrameMat);
       tunnelFrame.position.set(-BOWL.x + 2, 17, 760);
       tunnelFrame.rotation.y = Math.PI / 2;
       world.add(tunnelFrame);
@@ -841,79 +1142,237 @@
     }
 
     // ---------------------------------------------------------------- Aro, tablero, red, soporte
+    // Por aro: vidrio (1), pintura del tablero + reloj de posesión (1), aro (1), red (1), soporte
+    // acolchado (1) y metal (1). La red se anima en el shader: un bulto baja con la pelota y después
+    // queda bamboleándose hasta frenarse.
     const hoops = [];
+    const boardTex = track(canvasTex(512, 416, (c, w, h) => {
+      // 43 × 35 unidades: arriba el reloj de posesión (10 de alto), abajo el tablero de 43 × 25
+      c.clearRect(0, 0, w, h);
+      const by = h - 300, bh = 300;
+      // reflejos diagonales del vidrio
+      c.save(); c.beginPath(); c.rect(0, by, w, bh); c.clip();
+      const sheen = c.createLinearGradient(0, by, w, h);
+      sheen.addColorStop(0, 'rgba(255,255,255,.20)'); sheen.addColorStop(0.3, 'rgba(255,255,255,.03)');
+      sheen.addColorStop(0.55, 'rgba(255,255,255,.12)'); sheen.addColorStop(0.75, 'rgba(255,255,255,.02)'); sheen.addColorStop(1, 'rgba(255,255,255,.10)');
+      c.fillStyle = sheen; c.fillRect(0, by, w, bh);
+      c.fillStyle = 'rgba(255,255,255,.16)';
+      c.beginPath(); c.moveTo(60, by); c.lineTo(150, by); c.lineTo(20, h); c.lineTo(0, h); c.lineTo(0, by + 140); c.fill();
+      c.beginPath(); c.moveTo(330, by); c.lineTo(372, by); c.lineTo(250, h); c.lineTo(208, h); c.fill();
+      c.restore();
+      // marco blanco, rectángulo de tiro y borde inferior acolchado
+      c.strokeStyle = '#ffffff'; c.lineWidth = 20; c.strokeRect(10, by + 10, w - 20, bh - 20);
+      const iw = w * (14 / 43), ih = bh * (10.5 / 25);
+      c.lineWidth = 12; c.strokeRect(w / 2 - iw / 2, h - ih - 42, iw, ih);
+      c.fillStyle = '#1B2A4E'; c.fillRect(0, h - 22, w, 22); c.fillRect(0, h - 70, 14, 70); c.fillRect(w - 14, h - 70, 14, 70);
+      c.fillStyle = '#F26B1D'; c.fillRect(w / 2 - iw / 2, h - 34, iw, 12);
+      // reloj de posesión: caja negra con dígitos rojos
+      c.fillStyle = '#0a0c12'; c.fillRect(w / 2 - 84, 0, 168, by - 8);
+      c.strokeStyle = '#2b3145'; c.lineWidth = 6; c.strokeRect(w / 2 - 81, 3, 162, by - 14);
+      c.fillStyle = '#ff3b2f'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.font = 'bold 92px "Barlow Condensed", "Arial Narrow", Impact, sans-serif';
+      c.shadowColor = '#ff3b2f'; c.shadowBlur = 14;
+      c.fillText('24', w / 2, (by - 8) / 2 + 4);
+    }, { aniso: 4 }));
+    const netShader = (mat, U) => {
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uNet = U;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform vec4 uNet; varying float vNetShade;')
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+            // uNet = (bulto, profundidad del bulto 0..1, bamboleo, fase)
+            float dpt = clamp(-position.y / 17.0, 0.0, 1.0);
+            float bul = uNet.x * exp(-pow((dpt - uNet.y) / 0.26, 2.0));
+            transformed.xz *= 1.0 + bul * 0.62 + uNet.z * 0.12 * dpt * sin(uNet.w * 1.7);
+            transformed.y *= 1.0 + uNet.x * 0.16 + uNet.z * 0.07 * sin(uNet.w * 2.3);
+            float sw = uNet.z * dpt * dpt;
+            transformed.x += sin(uNet.w) * 3.0 * sw;
+            transformed.z += cos(uNet.w * 0.83) * 2.2 * sw;
+            // volumen: cordones del lado de la luz más claros, el fondo de la red algo más gris
+            vNetShade = (0.66 + 0.34 * clamp(dot(normalize(normal), vec3(-0.35, 0.75, 0.55)) * 0.5 + 0.6, 0.0, 1.0)) * mix(1.0, 0.86, dpt);`);
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', '#include <common>\nvarying float vNetShade;')
+          .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb *= vNetShade;');
+      };
+      mat.customProgramCacheKey = () => 'red';
+      return mat;
+    };
     function buildHoop(padColor) {
       const g = new T.Group();
-      const metal = track(new T.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.35, metalness: 0.7 }));
-      const glass = track(new T.MeshPhysicalMaterial({ color: 0xdbe6f5, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.4, side: T.DoubleSide }));
+      const metal = track(new T.MeshStandardMaterial({ color: 0x8e97a8, roughness: 0.45, metalness: 0.35 }));
+      const glass = track(new T.MeshStandardMaterial({ color: 0xcfe6f2, roughness: 0.06, metalness: 0.1, transparent: true, opacity: 0.2, side: T.DoubleSide, depthWrite: false }));
       const boardY = HOOP_H - 3.6 + BOARD_H / 2;              // el aro queda 15 cm por encima del borde inferior
       const board = new T.Mesh(track(new T.BoxGeometry(BOARD_W, BOARD_H, 1.2)), glass);
-      board.position.set(0, boardY, BOARD_Z - 0.6); board.castShadow = true; g.add(board);
-      // marco y rectángulo interior pintados (textura con alpha)
-      const linesTex = track(canvasTex(512, 300, (c, w, h) => {
-        c.clearRect(0, 0, w, h);
-        c.strokeStyle = '#ffffff'; c.lineWidth = 26; c.strokeRect(13, 13, w - 26, h - 26);
-        c.lineWidth = 14; const iw = w * (14 / 43), ih = h * (10.5 / 25);
-        c.strokeRect(w / 2 - iw / 2, h - ih - 30, iw, ih);
-        c.fillStyle = '#F26B1D'; c.fillRect(w / 2 - iw / 2, h - 30, iw, 10);
-      }));
-      const lines = new T.Mesh(track(new T.PlaneGeometry(BOARD_W, BOARD_H)), track(new T.MeshStandardMaterial({ map: linesTex, transparent: true, roughness: 0.5, side: T.DoubleSide })));
-      lines.position.set(0, boardY, BOARD_Z + 0.05); g.add(lines);
-      // aro
-      const rim = new T.Mesh(track(new T.TorusGeometry(RIM_R, 0.7, 8, 28)), track(new T.MeshStandardMaterial({ color: 0xf26b1d, roughness: 0.4, metalness: 0.3 })));
-      rim.rotation.x = Math.PI / 2; rim.position.set(0, HOOP_H, -230); rim.castShadow = true; g.add(rim);
-      const bracket = new T.Mesh(track(new T.BoxGeometry(5, 2.4, 4.4)), rim.material);
-      bracket.position.set(0, HOOP_H - 0.6, -230 - RIM_R - 1.6); g.add(bracket);
-      // red: cordones (cilindros finos fusionados) en rombos; origen local en el centro del aro para animar el "swish"
-      const NS = 12, levels = [[0, RIM_R], [-3.5, 4.7], [-7, 4.0], [-10.5, 3.5], [-14, 3.4], [-17, 3.6]];
+      board.position.set(0, boardY, BOARD_Z - 0.6); board.renderOrder = 2; g.add(board);
+      // pintura del tablero (marco, rectángulo, reflejos, acolchado) y reloj de posesión: una textura con alpha
+      const lines = new T.Mesh(track(new T.PlaneGeometry(BOARD_W, BOARD_H * 416 / 300)), track(new T.MeshBasicMaterial({ map: boardTex, transparent: true, side: T.DoubleSide, depthWrite: false })));
+      lines.position.set(0, boardY - BOARD_H / 2 + BOARD_H * 416 / 600, BOARD_Z + 0.08); lines.renderOrder = 3; g.add(lines);
+      // aro + escuadra (una malla)
+      const rimMat = track(new T.MeshStandardMaterial({ color: 0xf2601a, roughness: 0.38, metalness: 0.35, emissive: 0x4a1602 }));
+      const rimGeo = new T.TorusGeometry(RIM_R, 0.75, 8, 32); rimGeo.rotateX(Math.PI / 2);
+      const rim = new T.Mesh(track(mergeGeoms([
+        placed(rimGeo, 0, HOOP_H, -230),
+        placed(new T.BoxGeometry(5, 2.4, 4.6), 0, HOOP_H - 0.6, -230 - RIM_R - 1.7),
+        placed(new T.BoxGeometry(6.5, 6, 0.8), 0, HOOP_H - 2.6, BOARD_Z + 0.5),
+      ])), rimMat);
+      rim.castShadow = true; g.add(rim);
+      // red: 12 cordones en rombos (cilindros finos fusionados); origen local en el centro del aro
+      const NS = 12, levels = [[0, RIM_R], [-3.4, 4.75], [-6.8, 4.05], [-10.2, 3.5], [-13.6, 3.2], [-17, 3.3]];
       const strands = [], up = new T.Vector3(0, 1, 0), q = new T.Quaternion();
-      const strand = (a, b) => {
+      const strand = (a, b, r) => {
         const d = b.clone().sub(a), len = d.length();
         q.setFromUnitVectors(up, d.normalize());
-        strands.push({ geo: new T.CylinderGeometry(0.24, 0.24, len, 4, 1, true), matrix: M4().compose(a.clone().add(b).multiplyScalar(0.5), q, new T.Vector3(1, 1, 1)) });
+        strands.push({ geo: new T.CylinderGeometry(r, r, len, 5, 1, true), matrix: M4().compose(a.clone().add(b).multiplyScalar(0.5), q, new T.Vector3(1, 1, 1)) });
       };
       for (let l = 0; l < levels.length - 1; l++) {
         for (let i = 0; i < NS; i++) {
           const [y0, r0] = levels[l], [y1, r1] = levels[l + 1];
-          const a0 = (i / NS) * Math.PI * 2, p0 = new T.Vector3(Math.cos(a0) * r0, y0, Math.sin(a0) * r0);
+          const a0 = ((i + (l % 2) * 0.5) / NS) * Math.PI * 2, p0 = new T.Vector3(Math.cos(a0) * r0, y0, Math.sin(a0) * r0);
           for (const sgn of [0.5, -0.5]) {
-            const a1 = ((i + sgn) / NS) * Math.PI * 2;
-            strand(p0, new T.Vector3(Math.cos(a1) * r1, y1, Math.sin(a1) * r1));
+            const a1 = ((i + (l % 2) * 0.5 + sgn) / NS) * Math.PI * 2;
+            strand(p0, new T.Vector3(Math.cos(a1) * r1, y1, Math.sin(a1) * r1), 0.27 - l * 0.012);
           }
         }
       }
-      const net = new T.Mesh(track(mergeGeoms(strands)), track(new T.MeshBasicMaterial({ color: 0xf4f6ff, toneMapped: false })));
+      const uNet = { value: new T.Vector4(0, 0, 0, 0) };
+      const net = new T.Mesh(track(mergeGeoms(strands)), netShader(track(new T.MeshBasicMaterial({ color: 0xffffff, toneMapped: false })), uNet));
       net.position.set(0, HOOP_H, -230); net.frustumCulled = false; g.add(net);
-      // soporte: base acolchada, poste, brazo y tirante
-      const pad = track(new T.MeshStandardMaterial({ color: padColor, roughness: 0.75 }));
-      const base = new T.Mesh(track(new T.BoxGeometry(34, 22, 64)), pad); base.position.set(0, 11, -348); base.castShadow = true; g.add(base);
-      const post = new T.Mesh(track(new T.BoxGeometry(9, 100, 9)), pad); post.position.set(0, 72, -352); post.castShadow = true; g.add(post);
-      const arm = new T.Mesh(track(new T.BoxGeometry(7, 6, 118)), metal); arm.position.set(0, 118, -352 + 59 - 3); arm.castShadow = true; g.add(arm);
-      const drop = new T.Mesh(track(new T.BoxGeometry(10, 22, 3)), metal); drop.position.set(0, boardY + BOARD_H / 2 - 8, BOARD_Z - 2.5); g.add(drop);
-      const strut = new T.Mesh(track(new T.BoxGeometry(3, 3, 64)), metal); strut.position.set(0, 100, -352 + 28); strut.rotation.x = 0.55; g.add(strut);
-      return { group: g, net, swish: 0 };
+      // soporte acolchado: base, poste inclinado y protector del brazo (una malla)
+      const pad = track(new T.MeshStandardMaterial({ color: padColor, roughness: 0.7 }));
+      const lean = M4().makeTranslation(0, 66, -338).multiply(M4().makeRotationX(0.2));
+      const support = new T.Mesh(track(mergeGeoms([
+        placed(new T.BoxGeometry(36, 20, 66), 0, 10, -350),
+        placed(new T.BoxGeometry(30, 8, 40), 0, 24, -356),
+        { geo: new T.BoxGeometry(11, 96, 12), matrix: lean },
+        placed(new T.BoxGeometry(9, 9, 46), 0, 113, -306),
+      ])), pad);
+      support.castShadow = true; g.add(support);
+      // metal: brazo, tirantes, marco del tablero y caja del reloj (una malla)
+      const strut = (y, z, len, rx) => ({ geo: new T.BoxGeometry(3, 3, len), matrix: M4().makeTranslation(0, y, z).multiply(M4().makeRotationX(rx)) });
+      const fz = BOARD_Z - 0.6;
+      const frame = new T.Mesh(track(mergeGeoms([
+        placed(new T.BoxGeometry(6, 6, 96), 0, 113, -328 + 48 + 7),
+        strut(98, -290, 70, 0.52),
+        placed(new T.BoxGeometry(9, 26, 3), 0, boardY + 2, BOARD_Z - 2.6),
+        placed(new T.BoxGeometry(BOARD_W + 2, 1.4, 2.4), 0, boardY + BOARD_H / 2 + 0.7, fz), placed(new T.BoxGeometry(BOARD_W + 2, 1.4, 2.4), 0, boardY - BOARD_H / 2 - 0.7, fz),
+        placed(new T.BoxGeometry(1.4, BOARD_H, 2.4), -BOARD_W / 2 - 0.7, boardY, fz), placed(new T.BoxGeometry(1.4, BOARD_H, 2.4), BOARD_W / 2 + 0.7, boardY, fz),
+        placed(new T.BoxGeometry(15, 8.6, 4), 0, boardY + BOARD_H / 2 + 5.2, BOARD_Z - 2.2),
+      ])), metal);
+      frame.castShadow = true; g.add(frame);
+      return { group: g, net, uNet, swish: 0, last: 0, sway: 0, phase: 0 };
     }
     const hoopNear = buildHoop(0x22335a); world.add(hoopNear.group); hoops.push(hoopNear);
     // el aro lejano se gira 180° y se corre 600: su aro local en z = -230 queda en z = 830 (cancha y = 1130)
     const hoopFar = buildHoop(0x22335a); hoopFar.group.rotation.y = Math.PI; hoopFar.group.position.z = 600; world.add(hoopFar.group); hoops.push(hoopFar);
-    function animateNet(h) {                 // swish 0..1: la red se estira, se abre y se bambolea
-      const s = Math.max(0, Math.min(1, h.swish)), w = Math.sin(s * Math.PI);
-      h.net.scale.set(1 + w * 0.35, 1 + w * 0.3, 1 + w * 0.35);
-      h.net.rotation.z = Math.sin(s * 11) * 0.12 * w;
-      h.net.rotation.x = Math.cos(s * 9) * 0.08 * w;
+    // swish 0..1 = la pelota atravesando la red (lo marca el juego). La escena agrega la inercia:
+    // mientras pasa, un bulto baja por la red; al salir, la red queda bamboleándose ~1,5 s.
+    function animateNet(h, dt) {
+      const sIn = Math.max(0, Math.min(1, h.swish));
+      if (sIn > 0 && sIn < 1) { h.sway = 1; }
+      else if (sIn >= 1 && h.last < 1) h.sway = 1;
+      h.last = sIn;
+      if (h.sway > 0) { h.sway *= Math.exp(-dt * 2.3); h.phase += dt * 15; if (h.sway < 0.01) h.sway = 0; }
+      const passing = sIn > 0 && sIn < 1 ? Math.sin(sIn * Math.PI) : 0;
+      h.uNet.value.set(passing, sIn * 1.1, h.sway, h.phase);
     }
 
     // ---------------------------------------------------------------- Pelota
-    const ballGeo = track(new T.SphereGeometry(3.2, 24, 18));
-    const ballMat = track(new T.MeshStandardMaterial({ map: track(ballTexture()), roughness: 0.55, metalness: 0 }));
+    // Textura de cuero granulado con canales (también como relieve), un leve brillo propio para que no
+    // se apague en la sombra y un borde oscurecido (como un contorno) que la separa del parqué. Debajo,
+    // una sombra de contacto marca su posición real sobre el piso aunque vaya por el aire.
+    const ballGeo = track(new T.SphereGeometry(3.2, 28, 20));
+    const ballTex = track(ballTexture());
+    const ballMat = track(new T.MeshStandardMaterial({ map: ballTex, bumpMap: ballTex, bumpScale: 0.9, roughness: 0.5, metalness: 0, emissive: 0x5a1c04, emissiveIntensity: 0.55 }));
+    ballMat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', `
+        {
+          float ndv = clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
+          outgoingLight *= mix(0.22, 1.0, smoothstep(0.1, 0.5, ndv));
+          outgoingLight += vec3(1.0, 0.62, 0.3) * pow(ndv, 6.0) * 0.1;
+        }
+        #include <opaque_fragment>`);
+    };
+    ballMat.customProgramCacheKey = () => 'pelota';
     const ballMesh = new T.Mesh(ballGeo, ballMat);
     ballMesh.castShadow = true; ballMesh.visible = false;
     scene.add(ballMesh);
+    const ballShadowMat = track(new T.MeshBasicMaterial({ color: 0x1a0d04, transparent: true, opacity: 0.4, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      map: track(canvasTex(64, 64, (g) => { const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.55, 'rgba(255,255,255,.75)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.clearRect(0, 0, 64, 64); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); })) }));
+    const ballShadow = new T.Mesh(track(new T.PlaneGeometry(9, 9)), ballShadowMat);
+    ballShadow.rotation.x = -Math.PI / 2; ballShadow.visible = false; ballShadow.renderOrder = 4;
+    scene.add(ballShadow);
     const ball = {
       mesh: ballMesh,
-      set(x, y, h, visible) { ballMesh.position.set(x - 180, (h || 0) + 3.2, y - 300); ballMesh.visible = visible !== false; },
+      set(x, y, h, visible) {
+        const hh = h || 0;
+        ballMesh.position.set(x - 180, hh + 3.2, y - 300); ballMesh.visible = visible !== false;
+        // sombra de contacto: se agranda y se desvanece con la altura; fuera de la cancha no se dibuja
+        const k = Math.min(1, hh / 150);
+        ballShadow.visible = ballMesh.visible && hh > 0.6;
+        ballShadow.position.set(x - 180, 0.35, y - 300);
+        ballShadow.scale.setScalar(1 + k * 1.3);
+        ballShadowMat.opacity = 0.42 * (1 - k * 0.75);
+      },
       spin(dt) { ballMesh.rotation.x -= dt * 7; ballMesh.rotation.z += dt * 2.5; },
     };
+
+    // ---------------------------------------------------------------- Viñeta
+    // Un rectángulo a pantalla completa (1 draw call) oscurece apenas las esquinas y el borde superior:
+    // concentra la mirada en la cancha y da el contraste de una transmisión.
+    const vignette = new T.Mesh(track(new T.PlaneGeometry(2, 2)), track(new T.ShaderMaterial({
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: `varying vec2 vUv;
+        void main() {
+          vec2 d = (vUv - vec2(0.5, 0.46)) * vec2(1.0, 0.92);
+          float a = smoothstep(0.36, 0.88, length(d)) * 0.54 + smoothstep(0.7, 1.0, vUv.y) * 0.16;
+          gl_FragColor = vec4(0.012, 0.02, 0.05, min(a, 0.8));
+        }`,
+      transparent: true, depthTest: false, depthWrite: false,
+    })));
+    vignette.frustumCulled = false; vignette.renderOrder = 999;
+    scene.add(vignette);
+
+    // ---------------------------------------------------------------- Papelitos del festejo
+    // Una malla instanciada (1 draw call, solo visible los segundos posteriores a una canasta): cae
+    // desde el techo de la zona del aro, con los colores del local. Toda la animación va en el shader.
+    const CONFETTI_N = 640, CONFETTI_T = 6.5;
+    const confettiU = { uT: { value: 0 } };
+    const confetti = (() => {
+      const g = new T.PlaneGeometry(3.6, 2.1);
+      const m = new T.MeshBasicMaterial({ side: T.DoubleSide, toneMapped: false, transparent: true });
+      m.onBeforeCompile = (sh) => {
+        sh.uniforms.uT = confettiU.uT;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nattribute vec4 aSeed; uniform float uT; varying float vFade;')
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+            float t = max(uT - aSeed.w * 1.4, 0.0);
+            float ang = t * (5.0 + aSeed.x * 9.0) + aSeed.y * 6.283;
+            // el papelito gira sobre sí mismo mientras cae y se hamaca
+            transformed = vec3(transformed.x * cos(ang) , transformed.y * cos(ang * 0.73) + transformed.x * sin(ang) * 0.35, transformed.x * sin(ang) + transformed.y * sin(ang * 0.73));
+            float fall = t * (20.0 + aSeed.z * 18.0) + t * t * 1.5;
+            transformed += vec3(sin(t * 1.9 + aSeed.y * 6.283) * 9.0 * aSeed.x, -fall, cos(t * 1.6 + aSeed.x * 6.283) * 7.0);
+            vFade = step(0.001, t) * (1.0 - smoothstep(${(CONFETTI_T - 1.2).toFixed(1)}, ${CONFETTI_T.toFixed(1)}, uT));`);
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', '#include <common>\nvarying float vFade;')
+          .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vFade;');
+      };
+      const mesh = new T.InstancedMesh(track(g), track(m), CONFETTI_N);
+      const seed = new Float32Array(CONFETTI_N * 4), rnd = lcg(91), mt = M4();
+      for (let i = 0; i < CONFETTI_N; i++) {
+        seed[i * 4] = rnd(); seed[i * 4 + 1] = rnd(); seed[i * 4 + 2] = rnd(); seed[i * 4 + 3] = rnd();
+        mesh.setMatrixAt(i, mt.makeTranslation((rnd() - 0.5) * 320, 110 + rnd() * 150, -280 + rnd() * 330));
+      }
+      g.setAttribute('aSeed', new T.InstancedBufferAttribute(seed, 4));
+      mesh.frustumCulled = false; mesh.visible = false; mesh.renderOrder = 6;
+      scene.add(mesh);
+      return mesh;
+    })();
+    function colorConfetti() {
+      const cols = [new T.Color(teams[0][0]), new T.Color(teams[0][1]), new T.Color('#FFC53D'), new T.Color('#FFFFFF')], rnd = lcg(5);
+      for (let i = 0; i < CONFETTI_N; i++) confetti.setColorAt(i, cols[Math.floor(rnd() * 3.4) % 4]);
+      confetti.instanceColor.needsUpdate = true;
+    }
+    colorConfetti();
 
     // ---------------------------------------------------------------- Overlay (dibujos sobre el piso)
     const OV_Y = 0.6;
@@ -1033,7 +1492,8 @@
     const UP = new T.Vector3(0, 1, 0);
     const cam = {
       mode: 'holder', pos: camera.position.clone(), look: new T.Vector3(0, 20, -230),
-      from: null, to: null, t0: 0, dur: 0.6, goal: null, lastD: 180, target: null, points: [], holder: null, cineT: 0,
+      from: null, to: null, moving: false, t0: 0, dur: 0.6, goal: null, lastD: 180, target: null, points: [], holder: null, cineT: 0,
+      scoreT: 0, scoreSide: 1, scoreA0: 0,
       dirty: false,                        // hay que volver a resolver el encuadre (giro, tamaño o franjas)
     };
     // Franjas de la interfaz superpuestas al canvas (px CSS): el encuadre deja esos bordes libres.
@@ -1047,98 +1507,322 @@
       }
       if (changed) cam.dirty = true;
     }
-    const _v = new T.Vector3(), _tmpCam = new T.PerspectiveCamera(FOV, 1, 2, 3200);
-    const clampPos = (p) => { p.x = Math.max(-BOWL.x + 14, Math.min(BOWL.x - 14, p.x)); p.z = Math.max(BOWL.z0 + 16, Math.min(BOWL.z1 - 16, p.z)); p.y = Math.max(28, Math.min(ROOF_Y - 90, p.y)); return p; };
-    function forwardFrom(yaw, pitch) {                  // yaw 0 → mira a -z; pitch > 0 → hacia abajo
-      return new T.Vector3(Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+    const _v = new T.Vector3();
+    const CAM_LIM = { x: BOWL.x - 14, z0: BOWL.z0 + 16, z1: BOWL.z1 - 16, y0: 28, y1: ROOF_Y - 90 };
+    const clampPos = (p) => { p.x = Math.max(-CAM_LIM.x, Math.min(CAM_LIM.x, p.x)); p.z = Math.max(CAM_LIM.z0, Math.min(CAM_LIM.z1, p.z)); p.y = Math.max(CAM_LIM.y0, Math.min(CAM_LIM.y1, p.y)); return p; };
+
+    // ---- Encuadre tipo Score! Hero: detrás y por encima del poseedor (girado por la órbita del
+    // usuario), mirando al aro. Garantías del solucionador:
+    //   1. El conjunto OBLIGATORIO (poseedor: pies, cabeza y ancho del cuerpo; aro: tablero, red y piso
+    //      debajo) queda siempre dentro de la zona libre de interfaz. La cámara nunca sale del estadio:
+    //      si el giro pedido no deja lugar (la tribuna queda demasiado cerca), el giro EFECTIVO se
+    //      comprime dentro del intervalo de giros que sí encuadran (yawInterval) en vez de devolver un
+    //      encuadre fallido.
+    //   2. Los puntos opcionales (compañeros y defensores) entran por cercanía al poseedor: si no caben
+    //      todos, se dejan fuera los más lejanos.
+    // Todo trabaja sobre arreglos y registros reutilizados: no crea objetos por fotograma.
+    const DEG = Math.PI / 180;
+    const FR = {
+      S: new Float32Array(3 * 96), nReq: 0, nOpt: 0,       // muestras (mundo): obligatorias y luego opcionales
+      hx: 0, hz: 0, bx: 0, bz: 1, elev: CAM_ELEV, D0: 150,
+      xLo: -1, xHi: 1, yLo: -1, yHi: 1, tanH: 1, tanV: 1, minPitch: 0.33, maxPitch: 1.05,
+    };
+    const OPT = [];                                        // puntos opcionales ordenados por cercanía
+    for (let i = 0; i < 40; i++) OPT.push({ x: 0, y: 0, h: 0, d: 0 });
+    const newFrame = () => ({ px: 0, py: 0, pz: 0, lyaw: 0, lpitch: 0, D: 0, ok: false, viol: 0 });
+    const copyFrame = (a, b) => { b.px = a.px; b.py = a.py; b.pz = a.pz; b.lyaw = a.lyaw; b.lpitch = a.lpitch; b.D = a.D; b.ok = a.ok; b.viol = a.viol; return b; };
+    const fTmp = newFrame(), fSet = newFrame(), fRes = newFrame(), fAux = newFrame(), fBest = newFrame();
+    const DCAP_REQ = 900, DCAP_ALL = 700;                  // distancia máxima: obligatorios / con opcionales
+    // rejilla de giros cada 7,5°: primero −90°..+90° (lo que puede pedir el usuario) y, si ahí no hay
+    // lugar (poseedor en un rincón, de espaldas a la tribuna), la vuelta completa
+    const YAW_N = 49, YAW_STEP = 7.5 * DEG, YAW_HALF = 12;
+    const IV = { valid: false, a: -Math.PI / 2, b: Math.PI / 2, c: 0, none: false };
+    const ivKey = new Float64Array(13), ivKeyPrev = new Float64Array(13);
+    const feas = new Uint8Array(YAW_N);
+    const framing = { effYaw: 0, shown: 0, total: 0, ok: true };   // resultado del último encuadre (diagnóstico)
+
+    function addSample(x, y, h) {
+      const i = (FR.nReq + FR.nOpt) * 3;
+      if (i + 3 > FR.S.length) return;
+      FR.S[i] = x - 180; FR.S[i + 1] = h; FR.S[i + 2] = y - 300;
     }
-    // Encuadre tipo Score! Hero: detrás y por encima del poseedor (girado por la órbita del usuario),
-    // mirando al aro, con todos los puntos adentro de la zona libre de interfaz.
-    function solveFraming(holder, points, opt) {
-      opt = opt || {};
-      const oYaw = opt.yaw != null ? opt.yaw : orbit.yaw, oPitch = opt.pitch != null ? opt.pitch : orbit.pitch;
-      const H = courtToWorld(holder.x, holder.y, 0);
-      const hoopW = courtToWorld(HOOP.x, HOOP.y, 0);
-      const dir = new T.Vector3(hoopW.x - H.x, 0, hoopW.z - H.z);
-      const dh = dir.length();
-      if (dh < 1) dir.set(0, 0, -1); else dir.divideScalar(dh);
-      if (dh < 150) dir.lerp(new T.Vector3(0, 0, -1), (150 - dh) / 150).normalize();
-      // "atrás" del poseedor, girado por el yaw del usuario (yaw > 0: la cámara pasa a su derecha)
-      const back = dir.clone().negate();
-      if (oYaw) back.applyAxisAngle(UP, oYaw);
-      // elevación: tan(29° + pitch del usuario)
-      const elev = Math.tan(Math.max(0.12, Math.min(1.25, Math.atan(CAM_ELEV) + oPitch)));
-      // muestras a encuadrar: pies y cabeza de cada punto, tablero completo, el poseedor
-      const S = [];
-      const addP = (x, y, h0, h1) => { S.push(courtToWorld(x, y, h0)); S.push(courtToWorld(x, y, h1)); };
-      addP(holder.x, holder.y, 0, holder.h != null ? holder.h + 8 : 52);
-      for (const p of points || []) { const px = p.x != null ? p.x : p[0], py = p.y != null ? p.y : p[1]; addP(px, py, 0, (p.h || 0) + 52); }
-      addP(HOOP.x - BOARD_W / 2, HOOP.y - 9, 0, HOOP_H + 24); addP(HOOP.x + BOARD_W / 2, HOOP.y - 9, 0, HOOP_H + 24);
-      addP(HOOP.x, HOOP.y, 0, HOOP_H);
-      const centroid = new T.Vector3(); for (const s of S) centroid.add(s); centroid.divideScalar(S.length);
-      const aspect = cssW / cssH;
-      _tmpCam.aspect = aspect; _tmpCam.fov = FOV; _tmpCam.updateProjectionMatrix();
-      const tanV = Math.tan((FOV / 2) * Math.PI / 180), tanH = tanV * aspect;
+    function addReq(x, y, h) { addSample(x, y, h); FR.nReq++; }
+    // Prepara las muestras y los límites de la zona útil para un poseedor y sus puntos.
+    function setupFraming(holder, points, oPitch, D0) {
+      FR.hx = holder.x - 180; FR.hz = holder.y - 300;
+      let dx = HOOP.x - holder.x, dz = HOOP.y - holder.y;
+      const dh = Math.hypot(dx, dz);
+      if (dh < 1) { dx = 0; dz = -1; } else { dx /= dh; dz /= dh; }
+      if (dh < 150) {                                      // cerca del aro: la vista tiende a mirar al fondo
+        const k = (150 - dh) / 150;
+        dx += (0 - dx) * k; dz += (-1 - dz) * k;
+        const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+      }
+      FR.bx = -dx; FR.bz = -dz;                            // "atrás" del poseedor con giro 0
+      FR.elev = Math.tan(Math.max(0.12, Math.min(1.25, Math.atan(CAM_ELEV) + oPitch)));
+      FR.D0 = D0 || 150;
+      FR.nReq = 0; FR.nOpt = 0;
+      const req = addReq;
+      // poseedor: pies, cabeza y un círculo de 20 unidades a media altura (brazos y cartel del nombre:
+      // el margen al borde crece cuando la cámara está cerca)
+      const top = holder.h != null ? holder.h + 8 : 52, mid = Math.min(30, top * 0.6);
+      req(holder.x, holder.y, 0); req(holder.x, holder.y, top);
+      req(holder.x - 20, holder.y, mid); req(holder.x + 20, holder.y, mid); req(holder.x, holder.y - 20, mid); req(holder.x, holder.y + 20, mid);
+      // aro: tablero completo, aro, red y el piso de abajo
+      req(HOOP.x - BOARD_W / 2, HOOP.y - 9, HOOP_H + 24); req(HOOP.x + BOARD_W / 2, HOOP.y - 9, HOOP_H + 24);
+      req(HOOP.x - BOARD_W / 2, HOOP.y - 9, HOOP_H - 5); req(HOOP.x + BOARD_W / 2, HOOP.y - 9, HOOP_H - 5);
+      req(HOOP.x, HOOP.y, HOOP_H); req(HOOP.x, HOOP.y + 6, HOOP_H - 18); req(HOOP.x, HOOP.y, 0);
+      // opcionales, del más cercano al más lejano
+      let n = 0;
+      if (points) for (let i = 0; i < points.length && n < OPT.length; i++) {
+        const p = points[i], o = OPT[n++];
+        o.x = p.x != null ? p.x : p[0]; o.y = p.y != null ? p.y : p[1]; o.h = p.h || 0;
+        o.d = (o.x - holder.x) * (o.x - holder.x) + (o.y - holder.y) * (o.y - holder.y);
+      }
+      for (let i = 1; i < n; i++) {                        // inserción (pocos elementos, sin basura)
+        const cur = OPT[i]; let j = i - 1;
+        while (j >= 0 && OPT[j].d > cur.d) { OPT[j + 1] = OPT[j]; j--; }
+        OPT[j + 1] = cur;
+      }
+      for (let i = 0; i < n; i++) { const o = OPT[i]; addSample(o.x, o.y, 0); FR.nOpt++; addSample(o.x, o.y, o.h + 52); FR.nOpt++; }
       // zona útil en NDC: fuera de las franjas de interfaz, con margen
-      const xLo = -1 + 2 * insets.left / cssW + 0.13, xHi = 1 - 2 * insets.right / cssW - 0.13;   // margen lateral: el cuerpo del poseedor no roza el borde
-      const yLo = -1 + 2 * insets.bottom / cssH + (insets.bottom ? 0.035 : 0.09);
-      const yHi = 1 - 2 * insets.top / cssH - (insets.top ? 0.04 : 0.1);
-      const minPitch = Math.max(0.1, 0.33 + oPitch), maxPitch = Math.min(1.3, 1.05 + oPitch);
-      // Evalúa el encuadre a distancia D: posición, orientación hacia las muestras y si entran todas.
-      function frameAt(D) {
-        const pos = H.clone().addScaledVector(back, D);
-        pos.y = Math.min(26 + D * elev, (200 + D * 0.08) * (elev / CAM_ELEV));
-        clampPos(pos);
-        const f = centroid.clone().sub(pos).normalize();
-        let lyaw = Math.atan2(f.x, -f.z), lpitch = Math.asin(-f.y), bb;
-        for (let k = 0; k < 6; k++) {
-          _tmpCam.position.copy(pos); _tmpCam.lookAt(pos.clone().add(forwardFrom(lyaw, lpitch))); _tmpCam.updateMatrixWorld();
-          bb = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9 };
-          for (const s of S) { _v.copy(s).project(_tmpCam); bb.x0 = Math.min(bb.x0, _v.x); bb.x1 = Math.max(bb.x1, _v.x); bb.y0 = Math.min(bb.y0, _v.y); bb.y1 = Math.max(bb.y1, _v.y); }
-          lyaw += Math.atan(((bb.x0 + bb.x1) / 2 - (xLo + xHi) / 2) * tanH);
-          const hgt = bb.y1 - bb.y0;
-          // el poseedor queda abajo con margen; si el conjunto es más alto que la zona útil, se centra
-          const targetBottom = hgt <= yHi - yLo ? yLo : (yLo + yHi) / 2 - hgt / 2;
-          lpitch += Math.atan((targetBottom - bb.y0) * tanV);
-          lpitch = Math.max(minPitch, Math.min(maxPitch, lpitch));
-        }
-        const ok = bb.x0 >= xLo && bb.x1 <= xHi && bb.y0 >= yLo - 0.01 && bb.y1 <= yHi;
-        return { pos, look: pos.clone().add(forwardFrom(lyaw, lpitch).multiplyScalar(200)), D, ok };
-      }
-      let D = opt.D0 || 150, r = frameAt(D), grown = 0;
-      for (let it = 0; it < 40 && !r.ok; it++) { D *= 1.07; r = frameAt(D); grown++; }
-      // afina la distancia entre la última que no alcanzaba y la que alcanza: así no "salta" al girar
-      if (r.ok && grown) {
-        let lo = D / 1.07, hi = D;
-        for (let k = 0; k < 5; k++) { const mid = (lo + hi) / 2, m = frameAt(mid); if (m.ok) { hi = mid; r = m; } else lo = mid; }
-      }
-      return { pos: r.pos, look: r.look, D: r.D };
+      const aspect = cssW / cssH;
+      FR.tanV = Math.tan((FOV / 2) * DEG); FR.tanH = FR.tanV * aspect;
+      FR.xLo = -1 + 2 * insets.left / cssW + 0.08; FR.xHi = 1 - 2 * insets.right / cssW - 0.08;
+      FR.yLo = -1 + 2 * insets.bottom / cssH + (insets.bottom ? 0.05 : 0.09);
+      FR.yHi = 1 - 2 * insets.top / cssH - (insets.top ? 0.04 : 0.1);
+      // inclinación de la mirada: con la cámara subida por el usuario no se fuerza a mirar más abajo
+      // (si no, el aro se sale por arriba cuando el poseedor está lejos)
+      FR.minPitch = Math.max(0.1, 0.33 + Math.min(0, oPitch)); FR.maxPitch = Math.min(1.3, 1.05 + Math.max(0, oPitch));
+      return n;
     }
+    // Distancia hasta el límite del estadio saliendo del poseedor hacia "atrás" con el giro dado.
+    function wallDist(yaw) {
+      const cy = Math.cos(yaw), sy = Math.sin(yaw);
+      const bx = FR.bx * cy + FR.bz * sy, bz = -FR.bx * sy + FR.bz * cy;
+      let d = 1e9;
+      if (bx > 1e-6) d = Math.min(d, (CAM_LIM.x - FR.hx) / bx); else if (bx < -1e-6) d = Math.min(d, (-CAM_LIM.x - FR.hx) / bx);
+      if (bz > 1e-6) d = Math.min(d, (CAM_LIM.z1 - FR.hz) / bz); else if (bz < -1e-6) d = Math.min(d, (CAM_LIM.z0 - FR.hz) / bz);
+      return Math.max(0, d);
+    }
+    // Evalúa el encuadre con giro `yaw` a distancia D usando las primeras nS muestras: ubica la cámara,
+    // la orienta para centrar el conjunto (el poseedor abajo, con margen) y dice si entra todo.
+    function frameAt(yaw, D, nS, out, loose) {
+      const S = FR.S, cy = Math.cos(yaw), sy = Math.sin(yaw);
+      const bx = FR.bx * cy + FR.bz * sy, bz = -FR.bx * sy + FR.bz * cy;
+      const px = Math.max(-CAM_LIM.x, Math.min(CAM_LIM.x, FR.hx + bx * D));
+      const pz = Math.max(CAM_LIM.z0, Math.min(CAM_LIM.z1, FR.hz + bz * D));
+      const py = Math.max(CAM_LIM.y0, Math.min(CAM_LIM.y1, Math.min(26 + D * FR.elev, (200 + D * 0.08) * (FR.elev / CAM_ELEV))));
+      let cx = 0, cyy = 0, cz = 0;
+      for (let i = 0; i < nS; i++) { cx += S[i * 3]; cyy += S[i * 3 + 1]; cz += S[i * 3 + 2]; }
+      let fx = cx / nS - px, fy = cyy / nS - py, fz = cz / nS - pz;
+      const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+      let lyaw = Math.atan2(fx, -fz), lpitch = Math.asin(Math.max(-1, Math.min(1, -fy)));
+      const minP = loose ? 0.02 : FR.minPitch, maxP = loose ? 1.45 : FR.maxPitch;
+      const xMid = (FR.xLo + FR.xHi) / 2, yMid = (FR.yLo + FR.yHi) / 2, yAvail = FR.yHi - FR.yLo;
+      let x0 = 0, x1 = 0, y0 = 0, y1 = 0, behind = false;
+      for (let k = 0; k < 7; k++) {
+        const cp = Math.cos(lpitch), sp = Math.sin(lpitch), cw = Math.cos(lyaw), sw = Math.sin(lyaw);
+        // base de la cámara: f (adelante), r (derecha), u (arriba)
+        const f0 = sw * cp, f1 = -sp, f2 = -cw * cp, u0 = sw * sp, u1 = cp, u2 = -cw * sp;
+        x0 = 1e9; x1 = -1e9; y0 = 1e9; y1 = -1e9; behind = false;
+        for (let i = 0; i < nS; i++) {
+          const dx = S[i * 3] - px, dy = S[i * 3 + 1] - py, dz = S[i * 3 + 2] - pz;
+          const zc = dx * f0 + dy * f1 + dz * f2;
+          if (zc < 6) { behind = true; continue; }
+          const xn = (dx * cw + dz * sw) / (zc * FR.tanH), yn = (dx * u0 + dy * u1 + dz * u2) / (zc * FR.tanV);
+          if (xn < x0) x0 = xn; if (xn > x1) x1 = xn; if (yn < y0) y0 = yn; if (yn > y1) y1 = yn;
+        }
+        if (k === 6 || x0 > x1) break;                     // la última pasada solo mide
+        lyaw += Math.atan(((x0 + x1) / 2 - xMid) * FR.tanH);
+        const hgt = y1 - y0;
+        // el poseedor queda abajo con margen; si el conjunto es más alto que la zona útil, se centra
+        const targetBottom = hgt <= yAvail ? FR.yLo : yMid - hgt / 2;
+        lpitch = Math.max(minP, Math.min(maxP, lpitch + Math.atan((targetBottom - y0) * FR.tanV)));
+      }
+      const viol = (behind || x0 > x1 ? 10 : 0) + Math.max(0, FR.xLo - x0) + Math.max(0, x1 - FR.xHi) + Math.max(0, FR.yLo - y0) + Math.max(0, y1 - FR.yHi);
+      out.px = px; out.py = py; out.pz = pz; out.lyaw = lyaw; out.lpitch = lpitch; out.D = D;
+      out.viol = viol; out.ok = viol <= 0.012;
+      return out.ok;
+    }
+    // Menor distancia (hasta dcap o la tribuna) con la que entran las obligatorias + n opcionales.
+    // Devuelve si lo logró; en `out` queda el encuadre. `coarse` omite el ajuste fino (solo factibilidad).
+    function solveSet(yaw, n, out, coarse) {
+      const nS = FR.nReq + 2 * n;
+      const dmax = Math.min(wallDist(yaw), n ? DCAP_ALL : DCAP_REQ);
+      if (dmax < 70) { out.ok = false; out.viol = 99; return false; }
+      const grow = coarse ? 1.22 : 1.1;
+      let D = Math.min(FR.D0, dmax), prev = 0, found = false;
+      for (let it = 0; it < 40; it++) {
+        if (frameAt(yaw, D, nS, fTmp, false)) { found = true; break; }
+        if (D >= dmax - 1e-6) break;
+        prev = D; D = Math.min(dmax, D * grow);
+      }
+      if (!found) { out.ok = false; out.viol = fTmp.viol; return false; }
+      copyFrame(fTmp, out);
+      if (!coarse && prev > 0) {                           // afina entre la última que no alcanzaba y la que alcanza
+        let lo = prev, hi = D;
+        for (let k = 0; k < 4; k++) { const mid = (lo + hi) / 2; if (frameAt(yaw, mid, nS, fTmp, false)) { hi = mid; copyFrame(fTmp, out); } else lo = mid; }
+      }
+      return true;
+    }
+    // Intervalo [a, b] de giros (respecto del eje poseedor→aro) que encuadran al conjunto obligatorio
+    // sin salir del estadio, y giro de reposo c (el más cercano a 0 que además muestra a todos, si
+    // existe). Se guarda en caché: no depende del giro pedido, solo del poseedor, la inclinación, el
+    // tamaño y las franjas.
+    const YAW_MID = (YAW_N - 1) / 2;
+    function yawAt(i) { return (i - YAW_MID) * YAW_STEP; }
+    // Afina el borde del intervalo entre un giro que encuadra y el vecino que no.
+    function edgeYaw(good, bad) {
+      for (let k = 0; k < 3; k++) { const m = (good + bad) / 2; if (solveSet(m, 0, fAux, true)) good = m; else bad = m; }
+      return good;
+    }
+    function yawInterval(nOpt) {
+      let same = IV.valid;
+      for (let i = 0; i < ivKey.length; i++) { if (Math.abs(ivKey[i] - ivKeyPrev[i]) > 1e-7) same = false; ivKeyPrev[i] = ivKey[i]; }
+      if (same) return IV;
+      IV.valid = true; IV.none = false;
+      const mid = YAW_MID;
+      let any = false;
+      feas.fill(0);
+      for (let i = mid - YAW_HALF; i <= mid + YAW_HALF; i++) if (solveSet(yawAt(i), 0, fAux, true)) { feas[i] = 1; any = true; }
+      if (!any) for (let i = 0; i < YAW_N; i++) if ((i < mid - YAW_HALF || i > mid + YAW_HALF) && solveSet(yawAt(i), 0, fAux, true)) { feas[i] = 1; any = true; }
+      if (!any) { IV.none = true; IV.a = IV.b = IV.c = 0; return IV; }
+      let anchor = -1;
+      for (let k = 0; k <= mid && anchor < 0; k++) { if (feas[mid + k]) anchor = mid + k; else if (feas[mid - k]) anchor = mid - k; }
+      let ia = anchor, ib = anchor;
+      while (ia > 0 && feas[ia - 1]) ia--;
+      while (ib < YAW_N - 1 && feas[ib + 1]) ib++;
+      // bordes: se afinan contra el vecino que no encuadra (dentro del rango que se evaluó)
+      const inRange = Math.abs(anchor - mid) <= YAW_HALF;
+      const lo = inRange ? mid - YAW_HALF : 0, hi = inRange ? mid + YAW_HALF : YAW_N - 1;
+      IV.a = ia > lo ? edgeYaw(yawAt(ia), yawAt(ia - 1)) : yawAt(ia);
+      IV.b = ib < hi ? edgeYaw(yawAt(ib), yawAt(ib + 1)) : yawAt(ib);
+      let c = Math.max(IV.a, Math.min(IV.b, 0));
+      if (nOpt && !solveSet(c, nOpt, fAux, true)) {         // giro de reposo: el más cercano que muestra a todos
+        let best = -1, bd = 1e9;
+        for (let i = ia; i <= ib; i++) { const d = Math.abs(yawAt(i) - c); if (d < bd && solveSet(yawAt(i), nOpt, fAux, true)) { bd = d; best = i; } }
+        if (best >= 0) c = yawAt(best);
+      }
+      IV.c = c;
+      return IV;
+    }
+    // Giro pedido (−90°..+90°) → giro efectivo dentro de [a, b]: 1:1 cerca del reposo y comprimido al
+    // acercarse al límite (se siente como una resistencia, sin zona muerta).
+    function mapYaw(req, iv) {
+      const full = ORBIT.yawMax, t = Math.abs(req), avail = req >= 0 ? iv.b - iv.c : iv.c - iv.a;
+      let g;
+      if (avail >= full) g = t * (avail / full);
+      else { const k = 0.6 * avail; g = t <= k ? t : k + (t - k) * (avail - k) / (full - k); }
+      return iv.c + (req >= 0 ? g : -g);
+    }
+    function frameToGoal(f, goal) {
+      const cp = Math.cos(f.lpitch);
+      goal.pos.set(f.px, f.py, f.pz);
+      goal.look.set(f.px + Math.sin(f.lyaw) * cp * 200, f.py - Math.sin(f.lpitch) * 200, f.pz - Math.cos(f.lyaw) * cp * 200);
+      goal.D = f.D;
+      return goal;
+    }
+    function solveFraming(holder, points, opt, goal) {
+      opt = opt || {};
+      goal = goal || { pos: new T.Vector3(), look: new T.Vector3(), D: 0 };
+      const oYaw = opt.yaw != null ? opt.yaw : orbit.yaw, oPitch = opt.pitch != null ? opt.pitch : orbit.pitch;
+      const N = setupFraming(holder, points, oPitch, opt.D0);
+      framing.total = N; framing.ok = true;
+      // caso habitual: sin giro y entra todo
+      if (oYaw === 0 && solveSet(0, N, fRes, false)) { framing.effYaw = 0; framing.shown = N; return frameToGoal(fRes, goal); }
+      // clave de la caché del intervalo (numérica: sin cadenas por fotograma)
+      let sum = 0;
+      for (let i = 0; i < N; i++) sum += OPT[i].x * 1.37 + OPT[i].y * 0.71 + i;
+      const K = ivKey;
+      K[0] = holder.x; K[1] = holder.y; K[2] = holder.h == null ? -1 : holder.h; K[3] = oPitch; K[4] = cssW; K[5] = cssH;
+      K[6] = insets.top; K[7] = insets.bottom; K[8] = insets.left; K[9] = insets.right; K[10] = N; K[11] = sum; K[12] = FR.D0;
+      const iv = yawInterval(N);
+      let eff = iv.none ? 0 : mapYaw(oYaw, iv);
+      let got = !iv.none && solveSet(eff, N, fRes, false), shown = N;
+      if (!got) {
+        // obligatorios con el giro efectivo; si justo no entra (borde del intervalo), se acerca al reposo
+        let base = !iv.none && solveSet(eff, 0, fSet, false);
+        for (let k = 1; !base && !iv.none && k <= 8; k++) { eff += (iv.c - eff) * (k / 8); base = solveSet(eff, 0, fSet, false); }
+        if (base) {
+          // el prefijo más largo de opcionales (por cercanía) que todavía entra
+          copyFrame(fSet, fRes); shown = 0;
+          let lo = 0, hi = N;
+          while (hi - lo > 1) { const m = (lo + hi) >> 1; if (solveSet(eff, m, fSet, false)) { lo = m; copyFrame(fSet, fRes); shown = m; } else hi = m; }
+          got = true;
+        }
+      }
+      if (!got) {
+        // último recurso (posiciones anómalas): el intento con menos desborde entre varios giros y
+        // distancias, con la inclinación liberada
+        let bestScore = 1e9; shown = 0;
+        for (let i = 0; i < YAW_N; i++) {
+          const y = yawAt(i), dmax = Math.min(wallDist(y), DCAP_REQ);
+          for (let D = 90; D <= dmax + 1e-6; D *= 1.3) {
+            frameAt(y, D, FR.nReq, fTmp, true);
+            // primero que entre; entre los que entran, el giro más parecido al pedido
+            const score = fTmp.viol > 0.012 ? 100 + fTmp.viol : Math.abs(y - oYaw);
+            if (score < bestScore) { bestScore = score; copyFrame(fTmp, fBest); eff = y; }
+          }
+        }
+        if (bestScore >= 1e9) frameAt(0, Math.max(60, wallDist(0)), FR.nReq, fBest, true);   // sin lugar en ningún giro
+        copyFrame(fBest, fRes);
+        framing.ok = fRes.viol <= 0.012;
+      }
+      framing.effYaw = eff; framing.shown = shown;
+      return frameToGoal(fRes, goal);
+    }
+    const goalObj = { pos: new T.Vector3(), look: new T.Vector3(), D: 0 };   // objetivo de la cámara (reutilizado)
+    const followOpt = { D0: 150 };
+    const DEFAULT_TARGET = { x: 180, y: 400 };
+    // setCamera({ mode, holder, target, points, instant })
+    //   mode 'holder'    : detrás del poseedor (holder {x,y}), encuadrando points
+    //   mode 'follow'    : sigue la pelota (target {x,y,h}) durante un movimiento
+    //   mode 'cinematic' : plano general lento de la portada
+    //   mode 'score'     : festejo tras una canasta: acercamiento con órbita corta hacia el aro, con la
+    //                      tribuna del fondo detrás (la hinchada festejando). Opcional: holder/target
+    //                      {x,y} = desde dónde se convirtió (define de qué lado entra la cámara) y
+    //                      cheer: false para no disparar el festejo de la hinchada.
     function setCamera(o) {
       o = o || {};
-      const now = cam.now || 0;
+      const now = cam.now || 0, prevMode = cam.mode;
       cam.mode = o.mode || cam.mode;
       if (o.points) cam.points = o.points;
       if (o.holder) cam.holder = o.holder;
       if (o.target) cam.target = o.target;
       let goal = null;
       if (cam.mode === 'holder' && cam.holder) {
-        goal = solveFraming(cam.holder, cam.points);
+        goal = solveFraming(cam.holder, cam.points, null, goalObj);
         cam.lastD = goal.D;
       } else if (cam.mode === 'follow') {
-        goal = solveFraming(cam.target || cam.holder || { x: 180, y: 400 }, cam.points, { D0: cam.lastD * 0.9 });
+        followOpt.D0 = cam.lastD * 0.9;
+        goal = solveFraming(cam.target || cam.holder || DEFAULT_TARGET, cam.points, followOpt, goalObj);
       } else if (cam.mode === 'cinematic') {
-        goal = cinematicPose(cam.cineT);
+        goal = cinematicPose(cam.cineT, goalObj);
+      } else if (cam.mode === 'score') {
+        if (prevMode !== 'score' || o.restart) {
+          cam.scoreT = 0;
+          // lado de entrada: el de quien convirtió si se conoce; si no, el lado en que ya está la cámara
+          const from = o.holder || o.target;
+          const sx = from ? from.x - HOOP.x : cam.pos.x;
+          cam.scoreSide = Math.abs(sx) < 12 ? (cam.pos.x >= 0 ? 1 : -1) : (sx > 0 ? 1 : -1);
+          cam.scoreA0 = Math.max(-0.5, Math.min(0.5, Math.atan2(cam.pos.x, cam.pos.z + 230) * 0.6));
+          if (o.cheer !== false && clock - cheerAt > 1) cheer();
+        }
+        goal = scorePose(o.instant ? 2.2 : cam.scoreT, goalObj);
+        if (o.instant) cam.scoreT = 2.2;
       }
       if (!goal) return;
       cam.goal = goal; cam.dirty = false;
       if (o.instant) {
-        cam.pos.copy(goal.pos); cam.look.copy(goal.look); cam.from = null;
+        cam.pos.copy(goal.pos); cam.look.copy(goal.look);
         applyCamera();
       } else if (cam.mode === 'holder') {
-        cam.from = { pos: cam.pos.clone(), look: cam.look.clone() };
+        if (!cam.from) cam.from = { pos: new T.Vector3(), look: new T.Vector3() };
+        cam.from.pos.copy(cam.pos); cam.from.look.copy(cam.look); cam.moving = true;
         cam.to = goal; cam.t0 = now; cam.dur = 0.6;
       }
+      if (cam.mode !== 'holder' || o.instant) cam.moving = false;
     }
     // Órbita del usuario: yaw y pitch en radianes (se acotan); instant salta sin animar.
     function setOrbit(o) {
@@ -1148,15 +1832,23 @@
       if (o.instant) {
         orbit.yaw = orbit.goalYaw; orbit.pitch = orbit.goalPitch;
         if (cam.mode === 'holder' && cam.holder) {
-          cam.goal = solveFraming(cam.holder, cam.points); cam.lastD = cam.goal.D;
-          cam.pos.copy(cam.goal.pos); cam.look.copy(cam.goal.look); cam.from = null;
+          cam.goal = solveFraming(cam.holder, cam.points, null, goalObj); cam.lastD = cam.goal.D;
+          cam.pos.copy(cam.goal.pos); cam.look.copy(cam.goal.look); cam.moving = false;
           applyCamera();
         }
       }
       orbit.settled = false;
       cam.dirty = true;
     }
-    const getOrbit = () => ({ yaw: orbit.yaw, pitch: orbit.pitch, goalYaw: orbit.goalYaw, goalPitch: orbit.goalPitch, settled: orbit.settled, yawMax: ORBIT.yawMax, pitchMin: ORBIT.pitchMin, pitchMax: ORBIT.pitchMax });
+    // yaw/pitch: giro pedido por el usuario. effYaw: giro que realmente aplica el encuadre (se comprime
+    // cuando el pedido no deja ver al poseedor y al aro); shown/total: puntos opcionales encuadrados.
+    const orbitInfo = { yaw: 0, pitch: 0, goalYaw: 0, goalPitch: 0, settled: true, yawMax: ORBIT.yawMax, pitchMin: ORBIT.pitchMin, pitchMax: ORBIT.pitchMax, effYaw: 0, shown: 0, total: 0, framed: true };
+    function getOrbit() {
+      const o = orbitInfo;
+      o.yaw = orbit.yaw; o.pitch = orbit.pitch; o.goalYaw = orbit.goalYaw; o.goalPitch = orbit.goalPitch; o.settled = orbit.settled;
+      o.effYaw = framing.effYaw; o.shown = framing.shown; o.total = framing.total; o.framed = framing.ok;
+      return o;
+    }
     const resetOrbit = () => setOrbit({ yaw: 0, pitch: 0 });
     // Acerca yaw/pitch a su objetivo con amortiguación exponencial; devuelve si cambió este fotograma.
     function stepOrbit(dt) {
@@ -1167,13 +1859,26 @@
       if (Math.abs(orbit.goalYaw - orbit.yaw) < 2e-4 && Math.abs(orbit.goalPitch - orbit.pitch) < 2e-4) { orbit.yaw = orbit.goalYaw; orbit.pitch = orbit.goalPitch; }
       return true;
     }
-    function cinematicPose(t) {
-      const a = Math.sin(t * 0.22) * 0.75;
-      const R = 480;
-      const center = new T.Vector3(0, 0, 40);
-      const pos = new T.Vector3(center.x + Math.sin(a) * R, 150 + Math.sin(t * 0.13) * 25, center.z + Math.cos(a) * R);
-      const look = new T.Vector3(0, 30, -200);
-      return { pos, look };
+    // Portada: plano general desde la media cancha lejana, con vaivén lento; deja ver el cubo marcador.
+    function cinematicPose(t, goal) {
+      const a = Math.sin(t * 0.22) * 0.5;
+      const R = 560;
+      goal.pos.set(Math.sin(a) * R * 0.8, 150 + Math.sin(t * 0.13) * 22, 40 + Math.cos(a) * R);
+      goal.look.set(0, 58, -200);
+      return goal;
+    }
+    // Festejo: la cámara baja hacia el aro por el lado de quien convirtió, se acerca y gira despacio;
+    // mira un poco por encima del aro para que la tribuna del fondo llene el cuadro.
+    function scorePose(t, goal) {
+      const e = 1 - Math.exp(-t / 0.9);
+      const a = cam.scoreA0 * 0.7 + cam.scoreSide * (0.1 + 0.15 * e + 0.018 * t);
+      const R = 250 - 66 * e - 3 * t;
+      // con franjas de interfaz, el aro sube al centro de la zona libre
+      const lift = (insets.bottom - insets.top) / Math.max(1, cssH) * 46;
+      goal.pos.set(Math.sin(a) * R, 104 - 14 * e, -230 + Math.cos(a) * R);
+      goal.look.set(-Math.sin(a) * 5, 82 - lift, -252);
+      clampPos(goal.pos);
+      return goal;
     }
     function applyCamera() {
       camera.position.copy(cam.pos); camera.lookAt(cam.look); camera.updateMatrixWorld();
@@ -1183,27 +1888,28 @@
       const turning = stepOrbit(dt);
       if (cam.mode === 'holder') {
         if (cam.holder && (turning || cam.dirty)) {
-          cam.goal = solveFraming(cam.holder, cam.points); cam.lastD = cam.goal.D; cam.dirty = false;
-          if (cam.from) cam.to = cam.goal;
+          cam.goal = solveFraming(cam.holder, cam.points, null, goalObj); cam.lastD = cam.goal.D; cam.dirty = false;
         }
-        if (cam.from && cam.to) {
+        if (cam.moving && cam.goal) {
           let k = Math.min(1, (now - cam.t0) / cam.dur);
           k = 1 - Math.pow(1 - k, 3);
-          cam.pos.lerpVectors(cam.from.pos, cam.to.pos, k);
-          cam.look.lerpVectors(cam.from.look, cam.to.look, k);
-          if (k >= 1) cam.from = null;
+          cam.pos.lerpVectors(cam.from.pos, cam.goal.pos, k);
+          cam.look.lerpVectors(cam.from.look, cam.goal.look, k);
+          if (k >= 1) cam.moving = false;
         } else if (cam.goal) {
           // sin transición programada: la cámara persigue el encuadre con amortiguación exponencial
           const k = 1 - Math.exp(-dt * 10);
           cam.pos.lerp(cam.goal.pos, k); cam.look.lerp(cam.goal.look, k);
           if (cam.pos.distanceToSquared(cam.goal.pos) < 0.01 && cam.look.distanceToSquared(cam.goal.look) < 0.01) { cam.pos.copy(cam.goal.pos); cam.look.copy(cam.goal.look); }
         }
-        orbit.settled = !turning && !cam.from && (!cam.goal || cam.pos.equals(cam.goal.pos));
-      } else if (cam.mode === 'follow' || cam.mode === 'cinematic') {
-        if (cam.mode === 'cinematic') { cam.cineT += dt; cam.goal = cinematicPose(cam.cineT); }
-        else if (cam.target) cam.goal = solveFraming(cam.target, cam.points, { D0: cam.lastD * 0.9 });
+        orbit.settled = !turning && !cam.moving && (!cam.goal || cam.pos.equals(cam.goal.pos));
+      } else {
+        let rate = 5;
+        if (cam.mode === 'cinematic') { cam.cineT += dt; cam.goal = cinematicPose(cam.cineT, goalObj); rate = 2.5; }
+        else if (cam.mode === 'score') { cam.scoreT += dt; cam.goal = scorePose(cam.scoreT, goalObj); rate = 3.6; }
+        else if (cam.target) { followOpt.D0 = cam.lastD * 0.9; cam.goal = solveFraming(cam.target, cam.points, followOpt, goalObj); }
         if (cam.goal) {
-          const k = 1 - Math.exp(-dt * (cam.mode === 'cinematic' ? 2.5 : 5));
+          const k = 1 - Math.exp(-dt * rate);
           cam.pos.lerp(cam.goal.pos, k); cam.look.lerp(cam.goal.look, k);
         }
         orbit.settled = !turning;
@@ -1215,17 +1921,18 @@
     // ---------------------------------------------------------------- Conversión pantalla ↔ cancha
     const raycaster = new T.Raycaster();
     const floorPlane = new T.Plane(new T.Vector3(0, 1, 0), 0);
+    const _ndc = new T.Vector2(), _hit = new T.Vector3(), _p = new T.Vector3();
     function screenToCourt(px, py) {
-      const ndc = new T.Vector2((px / cssW) * 2 - 1, -(py / cssH) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
-      const hit = raycaster.ray.intersectPlane(floorPlane, new T.Vector3());
+      _ndc.set((px / cssW) * 2 - 1, -(py / cssH) * 2 + 1);
+      raycaster.setFromCamera(_ndc, camera);
+      const hit = raycaster.ray.intersectPlane(floorPlane, _hit);
       return hit ? worldToCourt(hit) : null;
     }
     function courtToScreen(x, y, h) {
-      const v = courtToWorld(x, y, h || 0);
-      const vc = v.clone().applyMatrix4(camera.matrixWorldInverse);
-      v.project(camera);
-      return { x: (v.x + 1) / 2 * cssW, y: (1 - v.y) / 2 * cssH, depth: -vc.z };
+      courtToWorld(x, y, h || 0, _p);
+      const depth = -_v.copy(_p).applyMatrix4(camera.matrixWorldInverse).z;
+      _p.project(camera);
+      return { x: (_p.x + 1) / 2 * cssW, y: (1 - _p.y) / 2 * cssH, depth };
     }
 
     // ---------------------------------------------------------------- Calidad, tamaño, bucle
@@ -1263,7 +1970,7 @@
       camera.aspect = w / h; camera.updateProjectionMatrix();
       cam.dirty = true;
     }
-    let lastMs = 0, lastInfo = { calls: 0, triangles: 0 };
+    let lastMs = 0, lastNow = 0, lastInfo = { calls: 0, triangles: 0 };
     function render() {
       const t0 = performance.now();
       renderer.render(scene, camera);
@@ -1274,21 +1981,55 @@
       now = now / 1000;                              // now en ms (performance.now); dt en segundos
       if (dt == null) dt = 1 / 60; if (dt > 0.5) dt = dt / 1000; dt = Math.min(dt, 0.1);
       clock = now;
+      const sinceCheer = now - cheerAt;
       crowdUniforms.uTime.value = now;
-      crowdUniforms.uCheer.value = now - cheerAt;
-      for (const h of hoops) animateNet(h);
-      updateCamera(now, dt);
+      crowdUniforms.uCheer.value = sinceCheer;
+      // carteles LED: se desplazan despacio (el reflejo en el piso usa el mismo corrimiento)
+      ledTex.offset.x = (now * 0.011) % 1;
+      floorU.uLedOff.value = ledTex.offset.x;
+      // papelitos: solo durante el festejo
+      const party = sinceCheer >= 0 && sinceCheer < CONFETTI_T && quality !== 'baja';
+      confetti.visible = party;
+      if (party) confettiU.uT.value = sinceCheer;
+      for (const h of hoops) animateNet(h, dt);
+      // La cámara se amortigua con el tiempo real entre fotogramas (hasta 0,5 s): si el equipo rinde poco
+      // y el juego recorta dt, el giro y el encuadre igual llegan a destino a tiempo, no en cámara lenta.
+      const camDt = lastNow > 0 ? Math.min(0.5, Math.max(dt, now - lastNow)) : dt;
+      lastNow = now;
+      updateCamera(now, camDt);
+      // el cubo marcador baja en la portada para entrar en el plano general
+      cube.position.y = cam.mode === 'cinematic' ? CUBE_Y.low : CUBE_Y.high;
+      beams.visible = quality !== 'baja' && (cam.mode === 'cinematic' || cam.mode === 'score');
     }
+    // setTeams([[colorLocal, vivosLocal], [colorVisita, vivosVisita]]): tiñe al público, los banderines,
+    // la zona pintada y el círculo central de la cancha, el piso perimetral, el cubo marcador y los
+    // papelitos del festejo. Repetir la llamada con los mismos colores no repinta nada.
+    let teamsKey = '';
     function setTeams(t) {
       if (t && t[0]) teams[0] = t[0];
       if (t && t[1]) teams[1] = t[1];
-      colorCrowd(); buildPennants();
+      const key = teams[0].join('|') + '/' + teams[1].join('|');
+      if (key === teamsKey) return;
+      teamsKey = key;
+      colorCrowd(); buildPennants(); repaintCourts(); repaintScoreboard(); colorConfetti(); tintArena();
     }
+    // Piso perimetral y marco del túnel con el color del local; el reflejo de la tribuna en el parqué
+    // toma el tono medio de la hinchada.
+    const _c1 = new T.Color(), _c2 = new T.Color();
+    function tintArena() {
+      _c1.set(teams[0][0]); _c2.set(0x141c30);
+      apronMat.color.copy(_c2).lerp(_c1, 0.22);
+      trimMat.color.copy(_c1).lerp(_c2.set(0xffffff), 0.12);
+      tunnelFrameMat.color.copy(_c1);
+      floorU.uCrowdCol.value.copy(_c1).lerp(_c2.set(0x8d93a6), 0.6).multiplyScalar(0.55);
+    }
+    tintArena();
     function dispose() {
       overlay.clear();
       for (const d of disposables) if (d && d.dispose) d.dispose();
       if (pennants) pennants.geometry.dispose();
       pennantMat.dispose();
+      confetti.dispose();
       renderer.dispose();
     }
 
@@ -1299,7 +2040,7 @@
       add: (o) => dyn.add(o), remove: (o) => dyn.remove(o),
       courtToWorld: (x, y, h) => courtToWorld(x, y, h),
       worldToCourt, screenToCourt, courtToScreen,
-      info: () => ({ drawCalls: lastInfo.calls, triangles: lastInfo.triangles, ms: lastMs, crowd: crowds[0].count + crowds[1].count, quality }),
+      info: () => ({ drawCalls: lastInfo.calls, triangles: lastInfo.triangles, ms: lastMs, crowd: crowds[0].count + crowds[1].count, quality, mode: cam.mode, sinceCheer: clock - cheerAt }),
       solveFraming,
     };
     return api;

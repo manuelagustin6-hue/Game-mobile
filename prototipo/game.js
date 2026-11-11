@@ -57,14 +57,17 @@
     lives: LIFE_MAX, lifeTs: Date.now(),
     premium: false, sinceAd: 0, called: {},
     me: null, skills: { tiro: 0, pase: 0, manejo: 0 },
+    tut: {},                       // tutoriales ya vistos: n1, n2, n3 (gesto de cada nivel) y cam (girar la cámara)
   };
   let S = load();
   function load() {
+    let s = Object.assign({}, DEFAULTS);
     try {
       const raw = localStorage.getItem(KEY);
-      if (raw) return Object.assign({}, DEFAULTS, JSON.parse(raw));
+      if (raw) s = Object.assign(s, JSON.parse(raw));
     } catch (e) { /* sin almacenamiento: se juega igual */ }
-    return Object.assign({}, DEFAULTS);
+    s.tut = Object.assign({}, s.tut);
+    return s;
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* nada */ } }
 
@@ -475,6 +478,7 @@
     idx: 0, level: null, solution: null, mode: 'plan',
     st: null, anim: null, drag: null, charge: null, hint: false, hintCache: null,
     mine: null, rival: null, myLooks: [], rivalLooks: [],
+    dragInfo: null,              // dedo del arrastre en curso: dónde empezó, dónde está y si ya se movió
     orbit: null,                 // gesto en curso que gira la cámara (arrastre fuera del poseedor)
   };
 
@@ -516,17 +520,26 @@
 
   function resetPlay() {
     G.st = E.initState(G.level);
-    G.anim = null; G.drag = null; G.orbit = null; G.hintCache = null;
+    G.anim = null; G.drag = null; G.dragInfo = null; G.orbit = null; G.hintCache = null;
     stopCharge();
     G.mode = 'plan';
+    tagSlot = -1;
     clearFloat();
     planCamera(true);
-    $('tipbar').textContent = G.level.tip;
+    setTip(G.level.tip);
     updateMoveBar();
     updateHintBtn();
   }
 
   const movesWord = (n) => (n === 1 ? 'movimiento' : 'movimientos');
+
+  // Texto de la barra de ayuda (una o dos líneas cortas).
+  function setTip(text) { const el = $('tiptext'); if (el.textContent !== text) el.textContent = text; }
+  // Ayuda que corresponde a la situación actual cuando no se está haciendo nada.
+  function baseTip() {
+    if (G.hint) return hintText();
+    setTip(G.st.moves ? 'Elige el siguiente movimiento.' : G.level.tip);
+  }
 
   function updateMoveBar() {
     const min = G.solution.minMoves;
@@ -554,13 +567,14 @@
         <div class="fact"><b>${defs.length - talls}</b><span>${defs.length - talls === 1 ? 'defensor' : 'defensores'}${talls ? ` · ${talls} ${talls === 1 ? 'pívot' : 'pívots'}` : ''}</span></div>
       </div>
       <ul class="howto">
-        <li><b>Pase:</b> arrastra del jugador con la pelota a un compañero.</li>
-        <li><b>Conducir:</b> arrastra a un espacio libre para avanzar unos pasos.</li>
-        <li><b>Tiro:</b> traza la línea hacia el centro del aro; después mantén presionado para cargar fuerza y suelta en la zona verde.</li>
+        <li><b>Pase:</b> arrastra del jugador a un compañero.</li>
+        <li><b>Conducir:</b> arrastra a un espacio libre.</li>
+        <li><b>Tiro:</b> arrastra hasta el aro y suelta con la mira verde; después carga la fuerza.</li>
+        <li><b>Cámara:</b> arrastra fuera del jugador para girarla; ↻ la recentra.</li>
       </ul>
       <p class="note">Juegas un movimiento por vez. Los rivales solo se mueven mientras se ejecuta tu movimiento.</p>
       <div class="actions"><button class="btn" id="m-go">A jugar</button></div>`,
-    { 'm-go': () => { closeModal(); G.mode = 'plan'; } });
+    { 'm-go': () => { closeModal(); G.mode = 'plan'; tut.t0 = 0; tut.quietUntil = 0; } });
   }
 
   // ¿El defensor más cercano al punto donde falló el último movimiento es un pívot?
@@ -584,6 +598,7 @@
   }
 
   function useHint() {
+    if (G.mode === 'charge') cancelCharge();
     if (G.hint || G.mode !== 'plan') return;
     if (S.coins >= HINT_COST) {
       S.coins -= HINT_COST; save(); refreshHud();
@@ -612,12 +627,13 @@
   function hintText() {
     const best = currentHint();
     if (!G.hint) return;
-    if (!best) $('tipbar').textContent = 'Desde aquí no hay una jugada de pases segura. Prueba conducir la pelota o reinicia el nivel.';
-    else if (best.chain[1] === 'H') $('tipbar').textContent = 'Ayuda: tira al aro.';
-    else $('tipbar').textContent = `Ayuda: pasa a ${G.myLooks[best.chain[1]].name} (#${G.myLooks[best.chain[1]].num}).`;
+    if (!best) setTip('Desde aquí no hay pase seguro. Prueba conducir o reinicia.');
+    else if (best.chain[1] === 'H') setTip('Ayuda: tira al aro.');
+    else setTip(`Ayuda: pasa a ${G.myLooks[best.chain[1]].name} (#${G.myLooks[best.chain[1]].num}).`);
   }
 
   function askRestart() {
+    if (G.mode === 'charge') cancelCharge();
     if (G.mode !== 'plan' || !G.st.moves) return;
     if (S.premium) { resetPlay(); return; }
     modal(`
@@ -698,6 +714,7 @@
       S.coins += earned;
       S.unlocked = Math.max(S.unlocked, G.idx + 1);
       S.sinceAd++;
+      if (G.idx < 3) S.tut['n' + (G.idx + 1)] = true;      // nivel ganado: su gesto ya está aprendido
       save(); refreshHud();
       const last = G.idx === LEVELS.length - 1;
       const msg = st === 3 ? '¡Jugada perfecta!' : st === 2 ? 'Bien jugado. Se puede con un movimiento menos.' : 'Entró, pero hay un camino más corto.';
@@ -729,7 +746,7 @@
         robo: ['Te la robaron', 'Condujiste demasiado cerca de un defensor.'],
         tapon: ['Tapón', 'Tenías un defensor encima. Tira desde donde estés libre.'],
         lejos: ['Muy lejos', 'Tiraste desde fuera de la línea de triple: la pelota no llega.'],
-        desviado: ['Tiro desviado', 'La línea no pasó por el centro del aro y la pelota pegó en el costado. Apunta con más precisión.'],
+        desviado: ['Tiro desviado', 'La línea no pasó por el aro. Antes de soltar, mueve el dedo hasta que la mira se ponga verde.'],
         corto: ['Tiro corto', 'Te faltó fuerza. Suelta más arriba en la barra, dentro de la zona verde.'],
         largo: ['Tiro largo', 'Te pasaste de fuerza y la pelota pegó en el tablero. Suelta antes, dentro de la zona verde.'],
       };
@@ -801,7 +818,8 @@
     const inGame = host === stage;
     scene.setInsets({ top: inGame ? $('game-top').offsetHeight : 0, bottom: inGame ? $('game-bottom').offsetHeight : 0 });
     // El encuadre depende del tamaño del área: se recalcula si se está planeando
-    if (current === 'game' && G.st && (G.mode === 'plan' || G.mode === 'charge')) planCamera(true);
+    faCache = null;
+    if (current === 'game' && G.st && (G.mode === 'plan' || G.mode === 'charge')) { planCamera(true); placeMeter(); }
   }
   const observer = new ResizeObserver(resize);
   observer.observe(stage);
@@ -911,8 +929,8 @@
   function startMove(res) {
     G.anim = { res, real0: performance.now(), done: false, release: null };
     G.mode = 'anim';
-    G.drag = null;
-    $('tipbar').textContent = '';
+    G.drag = null; G.dragInfo = null;
+    setTip('');
     // La cámara sigue la pelota sin perder de vista al que la jugó (queda entre los puntos a encuadrar)
     const hp = G.st.pos[G.st.holder];
     scene.setCamera({ mode: 'follow', target: { x: hp[0], y: hp[1], h: 30 }, points: framingPoints(G.st.t).concat([{ x: hp[0], y: hp[1] }]) });
@@ -966,38 +984,344 @@
     // Previsualización del movimiento que se está arrastrando
     const d = G.mode === 'plan' ? G.drag : null;
     if (d && d.kind === 'shot') {
-      const range = E.rangeFor(lv, G.st.holder);
-      const far = E.dist(a.x, a.y, HOOP.x, HOOP.y) > range;
-      ov.circle(HOOP, range, { color: far ? '#F0565B' : '#3CC17F', fill: true, alpha: 0.55, width: 2 });
-      ov.arc(a, { x: d.x, y: d.y, h: HOOP_H }, HOOP_H + 40, { color: far ? '#F0565B' : '#FFC53D', dashed: true });
+      const far = d.aim === 'far';
+      ov.circle(HOOP, E.rangeFor(lv, G.st.holder), { color: far ? '#F0565B' : '#3CC17F', fill: true, alpha: 0.55, width: 2 });
+      // Con un defensor encima el tiro sale tapado: se marca hasta dónde tapa cada uno
+      if (d.aim === 'blocked') (lv.defenders || []).forEach((df, k) => { if (E.dist(defPos[k].x, defPos[k].y, a.x, a.y) < E.defBlock(df)) ov.circle(defPos[k], E.defBlock(df), { color: '#F0565B', fill: true, alpha: 0.8, width: 2.2 }); });
+      shotArc(ov, a, d, d.aim);
     } else if (d && d.kind === 'pass') {
       const bp = G.st.pos[d.to];
       const b = { x: bp[0], y: bp[1] };
       ov.line([a, b], { color: '#FFFFFF', width: 3.2, arrow: true });
     } else if (d && d.kind === 'dribble') {
+      // Verde intenso con bordes oscuros: se distingue sobre el parqué claro y sobre la pintura.
+      // Los bordes son dos líneas finas a los lados (no una más ancha debajo: el orden de dibujo
+      // entre dos cintas superpuestas no está garantizado)
       const tgt = E.dribbleTarget(lv, G.st, d.x, d.y);
-      ov.circle(a, E.dribbleMaxFor(lv, G.st.holder), { color: '#9FE8C3', dashed: true, alpha: 0.45, width: 1.4 });
-      ov.line([a, tgt], { color: '#9FE8C3', width: 3, dashed: true, arrow: true });
-      ov.disc(tgt, 13, { color: '#9FE8C3', alpha: 0.35 });
+      const W = 3.8, len = Math.max(1, tgt.len), ux = (tgt.x - a.x) / len, uy = (tgt.y - a.y) / len;
+      ov.circle(a, E.dribbleMaxFor(lv, G.st.holder), { color: '#0B5A3C', dashed: true, alpha: 0.9, width: 2.4 });
+      ov.line([a, tgt], { color: '#2EE6A0', width: W, arrow: true });
+      const body = Math.max(0, len - W * 4.5), off = W / 2 + 0.55;
+      [1, -1].forEach((k) => ov.line([{ x: a.x - uy * off * k, y: a.y + ux * off * k }, { x: a.x + ux * body - uy * off * k, y: a.y + uy * body + ux * off * k }], { color: '#06281C', width: 1.3, alpha: 0.8 }));
+      ov.disc(tgt, 15, { color: '#06281C', alpha: 0.55 });
+      ov.disc(tgt, 11.5, { color: '#2EE6A0', alpha: 0.95 });
     }
-    // Cargando fuerza: la dirección ya quedó fijada
-    if (G.mode === 'charge' && G.charge) ov.arc(a, { x: G.charge.aim.x, y: G.charge.aim.y, h: HOOP_H }, HOOP_H + 40, { color: '#FFC53D', dashed: true });
+    // Cargando fuerza: la dirección ya quedó fijada (verde si va al aro, ámbar o roja si va desviada)
+    if (G.mode === 'charge' && G.charge) shotArc(ov, a, G.charge.aim, G.charge.level);
+  }
+  // Arco del tiro con el color de la puntería. Dentro del margen "encaja" en el centro del aro.
+  const AIM_COLORS = { in: '#4BE38F', near: '#FFB02E', out: '#F0565B', far: '#F0565B', blocked: '#F0565B' };
+  function shotArc(ov, a, aim, level) {
+    const to = level === 'in' ? hoopTop : { x: aim.x, y: aim.y, h: HOOP_H };
+    ov.arc(a, to, HOOP_H + 40, { color: AIM_COLORS[level] || AIM_COLORS.near, dashed: true, width: level === 'in' ? 2.6 : 2 });
   }
 
-  // Cartel con el nombre del poseedor, sobre su cabeza (div HTML posicionado con la cámara).
+  // ---------------------------------------------------------------- Partida: interfaz sobre el 3D
+  // Zona del canvas libre de interfaz (px CSS): entre la barra de arriba y la de abajo.
+  // Se mide una vez por fotograma (y de nuevo si cambia el tamaño): varias piezas la consultan.
+  let faCache = null;
+  function freeArea() {
+    if (faCache) return faCache;
+    const r = cv.getBoundingClientRect();
+    const top = $('game-top').offsetHeight, bot = $('game-bottom').offsetHeight;
+    return (faCache = { w: r.width, h: r.height, top, bottom: r.height - bot });
+  }
+  // Cuerpo de un jugador en pantalla: segmento de los pies a la cabeza (px CSS) y su largo.
+  function bodyOnScreen(x, y, h) {
+    const f = scene.courtToScreen(x, y, 0), t = scene.courtToScreen(x, y, P3.HEIGHT * (h || 1));
+    return { f, t, len: Math.hypot(f.x - t.x, f.y - t.y), ok: f.depth > 0 && t.depth > 0 };
+  }
+  const bodyDist = (p, b) => (b.ok ? E.pointSegDist(p.x, p.y, b.f.x, b.f.y, b.t.x, b.t.y) : Infinity);
+  function holderBody() {
+    const hp = G.st.pos[G.st.holder];
+    return bodyOnScreen(hp[0], hp[1], G.myLooks[G.st.holder].h);
+  }
+
+  // Cartel con el nombre del poseedor (div HTML posicionado con la cámara). Va donde no tape
+  // información de juego: debajo del jugador si hay lugar, si no a un costado de sus piernas y, como
+  // último recurso, sobre la cabeza. Se elige el primer lugar que no pisa a nadie (cuerpos,
+  // círculos de robo, aro) y se apaga mientras se arrastra.
   const nameTag = $('nametag');
+  let tagSlot = -1, tagText = '', tagW = 80, tagH = 24;
   function placeNameTag(visible) {
     if (!visible) { nameTag.hidden = true; return; }
     const holder = G.st.holder, L = G.myLooks[holder], hp = G.st.pos[holder];
-    const s = scene.courtToScreen(hp[0], hp[1], P3.HEIGHT * (L.h || 1) + 3);
-    const r = cv.getBoundingClientRect();
-    if (s.depth < 0 || s.x < 0 || s.y < 0 || s.x > r.width || s.y > r.height) { nameTag.hidden = true; return; }
-    nameTag.textContent = L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`;
-    nameTag.hidden = false;
-    // con la cámara girada el poseedor puede quedar en el borde: el cartel no se sale de la pantalla
-    const half = (nameTag.offsetWidth || 80) / 2 + 6;
-    nameTag.style.left = Math.max(half, Math.min(r.width - half, s.x)) + 'px';
-    nameTag.style.top = s.y + 'px';
+    const b = holderBody(), fa = freeArea();
+    if (!b.ok || b.f.x < 0 || b.f.x > fa.w || b.t.y > fa.h || b.f.y < 0) { nameTag.hidden = true; return; }
+    const text = L.star ? `★ ${L.name} · #${L.num}` : `#${L.num} ${L.name}`;
+    if (nameTag.hidden || text !== tagText) {
+      nameTag.textContent = tagText = text;
+      nameTag.hidden = false;
+      tagW = nameTag.offsetWidth || 80; tagH = nameTag.offsetHeight || 24;
+    }
+    nameTag.classList.toggle('dim', !!G.drag);
+    // Lo que no hay que tapar: rectángulos en pantalla de compañeros, defensores (con su círculo
+    // de robo) y el aro
+    const rects = [];
+    const addBody = (x, y, h, reach) => {
+      const o = bodyOnScreen(x, y, h);
+      if (!o.ok) return;
+      if (reach) {
+        // caja del círculo de robo tal como se ve en pantalla (8 puntos de su borde)
+        const q = [1e9, 1e9, -1e9, -1e9];
+        for (let k = 0; k < 8; k++) {
+          const c = scene.courtToScreen(x + Math.cos(k * Math.PI / 4) * reach, y + Math.sin(k * Math.PI / 4) * reach, 0);
+          q[0] = Math.min(q[0], c.x); q[1] = Math.min(q[1], c.y); q[2] = Math.max(q[2], c.x); q[3] = Math.max(q[3], c.y);
+        }
+        rects.push([q[0] - 2, q[1] - 2, q[2] + 2, q[3] + 2]);
+      }
+      const hw = Math.max(10, o.len * 0.3);
+      rects.push([o.f.x - hw, Math.min(o.t.y, o.f.y) - 4, o.f.x + hw, Math.max(o.t.y, o.f.y) + 4]);
+    };
+    G.st.pos.forEach((p, i) => { if (i !== holder) addBody(p[0], p[1], G.myLooks[i].h); });
+    (G.level.defenders || []).forEach((d, k) => { const p = E.defenderPos(d, G.st.t); addBody(p.x, p.y, G.rivalLooks[k].h, E.defReach(d) + E.BALL_R); });
+    const hs = scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H);
+    rects.push([hs.x - 22, hs.y - 30, hs.x + 22, hs.y + 22]);
+    const hw = Math.max(14, b.len * 0.3), midY = b.f.y - b.len * 0.2;
+    const slots = [
+      [b.f.x, b.f.y + 12 + tagH / 2],                       // debajo de los pies
+      [b.f.x + hw + 8 + tagW / 2, midY],                    // a la derecha de las piernas
+      [b.f.x - hw - 8 - tagW / 2, midY],                    // a la izquierda
+      [b.t.x, b.t.y - 6 - tagH / 2],                        // sobre la cabeza
+    ];
+    const cost = (c) => {
+      const x0 = c[0] - tagW / 2, x1 = c[0] + tagW / 2, y0 = c[1] - tagH / 2, y1 = c[1] + tagH / 2;
+      if (x0 < 4 || x1 > fa.w - 4 || y0 < fa.top + 2 || y1 > fa.bottom - 2) return 1e9;
+      let a = 0;
+      for (const q of rects) a += Math.max(0, Math.min(x1, q[2]) - Math.max(x0, q[0])) * Math.max(0, Math.min(y1, q[3]) - Math.max(y0, q[1]));
+      return a;
+    };
+    // se queda donde está mientras ese lugar siga libre (no salta de lado al girar la cámara)
+    let best = tagSlot >= 0 && cost(slots[tagSlot]) === 0 ? tagSlot : -1;
+    if (best < 0) { let bc = Infinity; slots.forEach((c, i) => { const k = cost(c); if (k < bc) { bc = k; best = i; } }); }
+    tagSlot = best;
+    const c = slots[best];
+    const half = tagW / 2 + 4;
+    nameTag.style.transform = `translate(${Math.round(Math.max(half, Math.min(fa.w - half, c[0])) - tagW / 2)}px, ${Math.round(c[1] - tagH / 2)}px)`;
+  }
+
+  // ---------------------------------------------------------------- Puntería del tiro
+  // El tiro sale desviado si la recta tirador → punto apuntado pasa a más de `tol` unidades del
+  // centro del aro. Ese margen nunca es menor que AIM_MIN_PX en pantalla: con la cámara lejos
+  // pocas unidades son muy pocos píxeles, y un dedo no apunta con esa precisión. El piso crece en
+  // la misma proporción que el margen propio del tiro (más cerca o con Tiro entrenado, más ancho).
+  const AIM_MIN_PX = 14, AIM_MAX_PX = 30, AIM_TOL_CAP = 40;
+  function aimInfo(aim) {
+    const st = G.st, hp = st.pos[st.holder], a = { x: hp[0], y: hp[1] };
+    const base = E.shotWindow(G.level, st);
+    // píxeles por unidad a la altura del aro, en la dirección perpendicular al tiro
+    const vx = HOOP.x - a.x, vy = HOOP.y - a.y, len = Math.hypot(vx, vy) || 1;
+    const nx = -vy / len, ny = vx / len;
+    const s1 = scene.courtToScreen(HOOP.x + nx * 8, HOOP.y + ny * 8, HOOP_H), s2 = scene.courtToScreen(HOOP.x - nx * 8, HOOP.y - ny * 8, HOOP_H);
+    const ppu = Math.max(0.02, Math.hypot(s1.x - s2.x, s1.y - s2.y) / 16);
+    const floorPx = Math.min(AIM_MAX_PX, AIM_MIN_PX * base.aimTolBase / E.AIM_TOL_FAR);
+    const tolMin = Math.min(AIM_TOL_CAP, floorPx / ppu);
+    const tol = Math.max(base.aimTolBase, tolMin);
+    const far = base.distance > E.rangeFor(G.level, st.holder);
+    // defensores que taparían el tiro desde donde está el tirador (regla del motor: dentro de su `block`)
+    const blockers = [];
+    (G.level.defenders || []).forEach((d, k) => { const p = E.defenderPos(d, st.t); if (E.dist(p.x, p.y, a.x, a.y) < E.defBlock(d)) blockers.push(k); });
+    const e = E.aimError(a, aim || HOOP);
+    const level = far ? 'far' : blockers.length ? 'blocked' : e.err <= tol ? 'in' : e.err <= tol * 2.2 ? 'near' : 'out';
+    return { tol, tolMin, tolBase: base.aimTolBase, tolPx: tol * ppu, ppu, err: e.err, q: { x: e.x, y: e.y }, level, far, blockers };
+  }
+
+  // Mira sobre el aro (anillo = margen real, punto = por dónde pasa la línea) y lupa sobre el dedo.
+  const aimRing = $('aim-ring'), aimDot = $('aim-dot'), aimLens = $('aim-lens');
+  const lensCv = $('aim-lens-cv'), lensCtx = lensCv.getContext('2d');
+  const LENS = 84;                                       // diámetro de la lupa (px CSS)
+  const AIM_LABELS = { in: 'En la mira', near: 'Desviado', out: 'Desviado', far: 'Muy lejos', blocked: 'Tapado' };
+  let aimShown = null;                                   // datos de la mira dibujada este fotograma
+  let lensSpot = -1;                                     // lugar que ocupa la lupa respecto del dedo
+  function placeAimUI() {
+    const dragging = G.mode === 'plan' && G.drag && G.drag.kind === 'shot';
+    const charging = G.mode === 'charge' && G.charge;
+    if (!dragging && !charging) {
+      if (aimShown) { aimRing.hidden = aimDot.hidden = aimLens.hidden = true; aimRing.classList.remove('in'); aimShown = null; lensSpot = -1; }
+      return;
+    }
+    const info = dragging ? aimInfo(G.drag) : G.charge.info;
+    const hs = scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H), qs = scene.courtToScreen(info.q.x, info.q.y, HOOP_H);
+    const color = AIM_COLORS[info.level];
+    const rad = Math.max(8, info.tolPx);
+    aimRing.style.setProperty('--aim', color);
+    aimRing.style.width = aimRing.style.height = (2 * rad).toFixed(1) + 'px';
+    aimRing.style.transform = `translate(${(hs.x - rad).toFixed(1)}px, ${(hs.y - rad).toFixed(1)}px)`;
+    aimRing.classList.toggle('in', info.level === 'in');
+    aimRing.hidden = false;
+    // dentro del margen el punto "encaja" en el centro; fuera, muestra por dónde pasa la línea
+    const dx = info.level === 'in' ? 0 : qs.x - hs.x, dy = info.level === 'in' ? 0 : qs.y - hs.y;
+    aimDot.style.setProperty('--aim', color);
+    aimDot.style.transform = `translate(${(hs.x + dx).toFixed(1)}px, ${(hs.y + dy).toFixed(1)}px)`;
+    aimDot.hidden = info.level === 'far' || info.level === 'blocked';
+    aimShown = { info, hs, dx: qs.x - hs.x, dy: qs.y - hs.y, lens: false };
+    // Lupa: solo mientras el dedo está apoyado, por encima de él (o al costado si no hay lugar)
+    const fp = dragging && G.dragInfo ? G.dragInfo.last : null;
+    if (!fp) { aimLens.hidden = true; lensSpot = -1; return; }
+    // Lugares posibles, en orden de preferencia: arriba del dedo, a los costados, abajo. Vale el
+    // primero que entra en la zona libre, queda lejos del dedo y no tapa la mira del aro
+    const fa = freeArea(), R = LENS / 2;
+    const spots = [[0, -96], [-104, -34], [104, -34], [-104, -96], [104, -96], [0, 112], [-104, 40], [104, 40]];
+    const spot = (i) => {
+      const x = Math.max(R + 6, Math.min(fa.w - R - 6, fp.x + spots[i][0]));
+      const y = Math.max(fa.top + R + 2, Math.min(fa.bottom - R - 24, fp.y + spots[i][1]));
+      return { x, y, cost: Math.max(0, 78 - Math.hypot(x - fp.x, y - fp.y)) + Math.max(0, R + rad + 10 - Math.hypot(x - hs.x, y - hs.y)) };
+    };
+    // mientras el lugar actual siga sirviendo, la lupa no salta de lado
+    let best = lensSpot >= 0 ? spot(lensSpot) : null;
+    if (!best || best.cost > 0) {
+      best = null;
+      for (let i = 0; i < spots.length; i++) {
+        const c = spot(i);
+        if (!best || c.cost < best.cost - 0.5) { best = c; lensSpot = i; }
+        if (c.cost === 0) break;
+      }
+    }
+    const lx = best.x, ly = best.y;
+    aimLens.style.setProperty('--aim', color);
+    aimLens.style.transform = `translate(${Math.round(lx - R)}px, ${Math.round(ly - R)}px)`;
+    $('aim-lens-label').textContent = AIM_LABELS[info.level];
+    aimLens.hidden = false;
+    aimShown.lens = true;
+  }
+  // Contenido de la lupa: la zona del aro tal como se acaba de dibujar, ampliada, con el anillo
+  // del margen y el punto de la línea. Se llama justo después de scene.render().
+  function drawLens() {
+    if (!aimShown || !aimShown.lens) return;
+    const { info, hs, dx, dy } = aimShown;
+    const r = cv.getBoundingClientRect(), k = cv.width / Math.max(1, r.width);
+    const half = Math.max(22, Math.min(52, info.tolPx * 1.6));   // media ventana de pantalla que se amplía (px CSS)
+    const W = lensCv.width, s = W / LENS, z = (LENS / (2 * half)) * s;
+    const ctx = lensCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#06080f'; ctx.fillRect(0, 0, W, W);
+    try { ctx.drawImage(cv, (hs.x - half) * k, (hs.y - half) * k, 2 * half * k, 2 * half * k, 0, 0, W, W); } catch (e) { /* sin copia: quedan el anillo y el punto */ }
+    const color = AIM_COLORS[info.level], c = W / 2;
+    ctx.lineWidth = 2 * s; ctx.strokeStyle = 'rgba(6,8,15,.65)';
+    ctx.beginPath(); ctx.arc(c, c, info.tolPx * z + 2.2 * s, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = (info.level === 'in' ? 3.4 : 2.6) * s; ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.arc(c, c, info.tolPx * z, 0, Math.PI * 2); ctx.stroke();
+    if (info.level === 'far' || info.level === 'blocked') return;
+    let px = info.level === 'in' ? 0 : dx * z, py = info.level === 'in' ? 0 : dy * z;
+    const lim = c - 9 * s, m = Math.hypot(px, py);
+    if (m > lim) { px *= lim / m; py *= lim / m; }
+    ctx.beginPath(); ctx.arc(c + px, c + py, 5.5 * s, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.lineWidth = 2.4 * s; ctx.strokeStyle = color; ctx.stroke();
+  }
+
+  // Destino de la conducción: una marca HTML por encima de las barras, para que se vea aunque
+  // el punto caiga bajo la barra inferior (conducir hacia atrás o al costado).
+  const dribPin = $('drib-pin');
+  function placeDribPin() {
+    const d = G.mode === 'plan' ? G.drag : null;
+    if (!d || d.kind !== 'dribble') { if (!dribPin.hidden) dribPin.hidden = true; return; }
+    const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
+    const s = scene.courtToScreen(tgt.x, tgt.y, 0), fa = freeArea();
+    if (s.depth <= 0) { dribPin.hidden = true; return; }
+    const x = Math.max(16, Math.min(fa.w - 16, s.x)), y = Math.max(fa.top + 44, Math.min(fa.h - 8, s.y));
+    dribPin.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    dribPin.hidden = false;
+  }
+  // La barra inferior se aclara mientras el destino de la conducción cae debajo de ella.
+  function fadeBottomBar() {
+    const d = G.mode === 'plan' ? G.drag : null;
+    let under = false;
+    if (d && d.kind === 'dribble') {
+      const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
+      under = scene.courtToScreen(tgt.x, tgt.y, 0).y > freeArea().bottom - 24;
+    }
+    $('game-bottom').classList.toggle('see-through', under);
+  }
+
+  // ---------------------------------------------------------------- Tutorial con gesto animado
+  // En los niveles 1, 2 y 3, la primera vez, una mano fantasma repite el gesto que hay que hacer
+  // (se ubica con la cámara, así que acompaña los giros). Desaparece al empezar a arrastrar y
+  // vuelve si el jugador se queda quieto sin haber hecho el gesto. S.tut guarda lo ya aprendido.
+  const tut = { t0: 0, quietUntil: 0, step: null, camShown: 0 };   // camShown: segundos que lleva a la vista la pista de la cámara
+  const tutEl = $('tut'), tutHand = $('tut-hand'), tutRing = $('tut-ring'), tutTrail = $('tut-trail'), coach = $('coach');
+  const REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const CAM_HINT_S = 7;
+  function tutSeen(key) { if (!S.tut[key]) { S.tut[key] = true; save(); } }
+  // Gesto que toca enseñar ahora: 'aim' | 'hold' | 'pass' | 'star' | null
+  function tutStep() {
+    const k = G.idx;
+    if (k > 2 || S.tut['n' + (k + 1)] || (S.stars[k] || 0) > 0) return null;
+    if (k === 0) {
+      // el nivel 1 se aprende al convertir: si el tiro falla, la mano vuelve a mostrar el gesto
+      if (G.mode === 'plan') return 'aim';
+      return G.mode === 'charge' && G.charge && !G.charge.pressing ? 'hold' : null;
+    }
+    if (G.mode !== 'plan' || G.st.moves > 0) return null;
+    if (k === 2 && G.st.holder === G.level.starIdx) return null;
+    return k === 1 ? 'pass' : 'star';
+  }
+  function tutText(step) {
+    if (step === 'aim') return 'Arrastra del jugador al aro y suelta';
+    if (step === 'hold') return 'Mantén presionado y suelta en la zona verde';
+    if (step === 'pass') return 'Arrastra del jugador a tu compañero';
+    return `Pásale la pelota a tu jugador ★ ${esc(S.me.name)}`;
+  }
+  function setCoach(html) {
+    if (html == null) { if (!coach.hidden) { coach.hidden = true; coach._html = null; } return; }
+    if (coach._html !== html) { coach.innerHTML = html; coach._html = html; }
+    coach.style.top = (freeArea().top + 2) + 'px';
+    coach.hidden = false;
+  }
+  function updateTutorial(now, dt) {
+    const open = $('modal').hidden;
+    const step = open ? tutStep() : null;
+    const busy = !!(G.drag || G.orbit);
+    if (busy) tut.quietUntil = now + 1600;
+    if (step !== tut.step) { tut.step = step; tut.t0 = 0; }
+    // Cartel: el gesto del nivel o, la primera vez que no hay gesto que enseñar, cómo girar la cámara
+    let coachHtml = null;
+    if (step && !G.drag) coachHtml = tutText(step);
+    else if (open && !step && !S.tut.cam && G.mode === 'plan' && !G.drag) {
+      // se cuenta en tiempo de dibujo (dt acotado): en un equipo lento no se va antes de poder leerla
+      tut.camShown += dt;
+      if (tut.camShown > CAM_HINT_S) tutSeen('cam');
+      else coachHtml = '<i class="swipe"></i><span>Arrastra fuera del jugador para girar la cámara</span>';
+    }
+    setCoach(coachHtml);
+    // Mano
+    if (!step || busy || now < tut.quietUntil) { if (!tutEl.hidden) tutEl.hidden = true; tut.t0 = 0; return; }
+    if (!tut.t0) tut.t0 = now;
+    const fa = freeArea();
+    let from, to, T = 2600;
+    if (step === 'hold') {
+      // lejos del tirador y del medidor: del lado contrario al medidor, a media altura
+      const left = !$('meter').classList.contains('left');
+      from = to = { x: fa.w * (left ? 0.24 : 0.76), y: fa.top + (fa.bottom - fa.top) * 0.5 };
+      T = 1700;
+    } else {
+      const hp = G.st.pos[G.st.holder];
+      from = scene.courtToScreen(hp[0], hp[1], 25);
+      if (step === 'aim') to = scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H);
+      else { const tp = G.st.pos[step === 'star' ? G.level.starIdx : (G.st.holder === 0 ? 1 : 0)]; to = scene.courtToScreen(tp[0], tp[1], 25); }
+      if (from.depth <= 0 || to.depth <= 0) { tutEl.hidden = true; return; }
+    }
+    const u = REDUCED ? 0.74 : ((now - tut.t0) % T) / T;
+    let x, y, alpha, pressed, ringScale = 1, ringAlpha = 1;
+    if (step === 'hold') {
+      x = from.x; y = from.y; alpha = 1; pressed = u > 0.12;
+      ringScale = pressed ? 1 + 0.9 * ((u - 0.12) / 0.88) : 1; ringAlpha = pressed ? 1 - (u - 0.12) / 0.88 : 0;
+    } else {
+      const m = Math.max(0, Math.min(1, (u - 0.2) / 0.45)), e = m * m * (3 - 2 * m);
+      x = from.x + (to.x - from.x) * e; y = from.y + (to.y - from.y) * e;
+      alpha = u < 0.1 ? u / 0.1 : u > 0.9 ? (1 - u) / 0.1 : 1;
+      pressed = u >= 0.12 && u < 0.88;
+      if (pressed && u > 0.66) ringScale = 1 + 0.16 * Math.sin((u - 0.66) / 0.22 * Math.PI * 2);
+      ringAlpha = pressed ? 1 : 0;
+    }
+    tutEl.hidden = false;
+    tutEl.style.opacity = (0.95 * alpha).toFixed(2);
+    tutHand.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${pressed ? 0.94 : 1.1})`;
+    tutRing.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${ringScale.toFixed(2)})`;
+    tutRing.style.opacity = ringAlpha.toFixed(2);
+    const len = pressed ? Math.hypot(x - from.x, y - from.y) : 0;
+    tutTrail.style.width = len.toFixed(1) + 'px';
+    tutTrail.style.transform = `translate(${from.x.toFixed(1)}px, ${from.y.toFixed(1)}px) rotate(${Math.atan2(y - from.y, x - from.x).toFixed(3)}rad)`;
   }
 
   // ---------------------------------------------------------------- Partida: un fotograma
@@ -1104,11 +1428,18 @@
     if (A && !ended) scene.setCamera({ mode: 'follow', target: { x: ball.x, y: ball.y, h: ball.h } });
 
     drawOverlay(now, gt, defPos);
-    placeNameTag(G.mode === 'plan');
     const ob = scene.getOrbit();
     $('btn-recenter').classList.toggle('off', ob.goalYaw === 0 && ob.goalPitch === 0);
     scene.update(now, dt);
+    // Interfaz pegada al 3D: se ubica con la cámara ya actualizada
+    faCache = null;
+    placeNameTag(G.mode === 'plan');
+    placeAimUI();
+    placeDribPin();
+    fadeBottomBar();
+    updateTutorial(now, dt);
     scene.render();
+    drawLens();
   }
 
   // Termina la animación de un movimiento.
@@ -1133,10 +1464,11 @@
     G.st = r.state;
     G.anim = null;
     G.mode = 'plan';
+    tagSlot = -1;                                // nuevo poseedor: el cartel vuelve a elegir su lugar
     planCamera(false);
     updateMoveBar();
     if (G.hint) hintText();
-    else $('tipbar').textContent = 'Bien. Elige el siguiente movimiento.';
+    else setTip('Bien. Elige el siguiente movimiento.');
   }
 
   // ---------------------------------------------------------------- Bucle de dibujo
@@ -1165,66 +1497,110 @@
     return hit ? scene.worldToCourt(hit) : null;
   }
 
-  // Qué movimiento representa el dedo en ese píxel: compañero (torso proyectado), aro o conducción.
+  // Qué movimiento representa el dedo en ese píxel: compañero (cuerpo proyectado), aro o conducción.
+  const CANCEL_PX = 16;                                  // volver al punto de partida anula el gesto
   function classify(p) {
-    const st = G.st;
+    const st = G.st, gi = G.dragInfo;
+    if (gi && Math.hypot(p.x - gi.x0, p.y - gi.y0) < CANCEL_PX) return { kind: null };
+    // Compañero: el más cercano al dedo entre los que quedan a tiro (el radio crece con su tamaño en pantalla)
+    let best = -1, bd = Infinity;
     for (let j = 0; j < st.pos.length; j++) {
-      if (j !== st.holder && pxDist(p, scene.courtToScreen(st.pos[j][0], st.pos[j][1], 25)) <= 36) return { kind: 'pass', to: j };
+      if (j === st.holder) continue;
+      const b = bodyOnScreen(st.pos[j][0], st.pos[j][1], G.myLooks[j].h);
+      const d = Math.min(bodyDist(p, b), pxDist(p, scene.courtToScreen(st.pos[j][0], st.pos[j][1], 25)) - 4);
+      if (d <= Math.max(32, Math.min(56, b.len * 0.28)) && d < bd) { bd = d; best = j; }
     }
-    if (pxDist(p, scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H)) <= 40) {
-      const aim = screenToCourtAt(p.x, p.y, HOOP_H) || HOOP;
-      return { kind: 'shot', x: aim.x, y: aim.y };
-    }
+    if (best >= 0) return { kind: 'pass', to: best };
+    // Aro: alrededor de su imagen en pantalla (la zona crece con el margen de puntería, para que
+    // un tiro desviado se vea como tal en vez de volverse otra cosa) o sobre el piso debajo de él
+    const shot = (aim) => ({ kind: 'shot', x: aim.x, y: aim.y, aim: aimInfo(aim).level });
+    const grab = Math.max(48, Math.min(80, aimInfo(HOOP).tolPx * 2.6));
+    if (pxDist(p, scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H)) <= grab) return shot(screenToCourtAt(p.x, p.y, HOOP_H) || HOOP);
     const c = scene.screenToCourt(p.x, p.y);
     if (!c) return { kind: null };
-    if (E.dist(c.x, c.y, HOOP.x, HOOP.y) < 70) return { kind: 'shot', x: c.x, y: c.y };
+    if (E.dist(c.x, c.y, HOOP.x, HOOP.y) < 70) return shot(c);
     const hp = st.pos[st.holder];
     if (E.dist(c.x, c.y, hp[0], hp[1]) < E.DRIBBLE_MIN + 6) return { kind: null };
     return { kind: 'dribble', x: c.x, y: c.y };
   }
+  // Ayuda corta mientras se arrastra: qué va a pasar al soltar.
+  function dragTip(d) {
+    if (d.kind === 'pass') { const L = G.myLooks[d.to]; return `Suelta para pasar a ${L.star ? '★ ' + L.name : '#' + L.num + ' ' + L.name}.`; }
+    if (d.kind === 'dribble') return 'Suelta para conducir hasta la marca verde.';
+    if (d.kind === 'shot') {
+      if (d.aim === 'far') return 'Desde aquí el tiro no llega: acércate o pasa la pelota.';
+      if (d.aim === 'blocked') return 'Con un defensor encima te tapan el tiro: pasa o aléjate.';
+      return d.aim === 'in' ? 'En la mira. Suelta para fijar el tiro.' : 'Desviado: mueve el dedo hasta que la mira quede verde.';
+    }
+    return 'Suelta aquí para cancelar.';
+  }
 
   // Giro de la cámara con el dedo: un ancho de pantalla ≈ 180° de yaw; la inclinación va con dy.
-  const ORBIT_TAP = 6;                                   // px: menos que esto es un toque, no un arrastre
+  const ORBIT_TAP = 10;                                  // px: menos que esto es un toque, no un arrastre
+  const DRAG_MIN = 12;                                   // px que debe moverse el dedo para que el gesto cuente
   function orbitMove(p) {
     const o = G.orbit, r = cv.getBoundingClientRect();
     const dx = p.x - o.x0, dy = p.y - o.y0;
     if (!o.active && Math.hypot(dx, dy) < ORBIT_TAP) return;
-    o.active = true;
+    if (!o.active) { o.active = true; tutSeen('cam'); }
     scene.setOrbit({ yaw: o.yaw0 - (dx / Math.max(1, r.width)) * Math.PI, pitch: o.pitch0 + (dy / Math.max(1, r.height)) * (Math.PI / 3) });
   }
   cv.addEventListener('pointerdown', (e) => {
     if (current !== 'game' || G.mode !== 'plan' || !$('modal').hidden) return;
     if (G.drag || G.orbit) return;                       // un segundo dedo no cambia el gesto en curso
     const p = toPx(e);
-    const hp = G.st.pos[G.st.holder];
     try { cv.setPointerCapture(e.pointerId); } catch (err) { /* nada */ }
     clearFloat();
-    if (pxDist(p, scene.courtToScreen(hp[0], hp[1], 25)) > 44) {
+    // ¿Sobre el poseedor? Cuenta todo su cuerpo en pantalla (de cerca es grande), con un mínimo
+    // cómodo para el dedo cuando la cámara está lejos
+    const hb = holderBody(), hp = G.st.pos[G.st.holder];
+    const onHolder = bodyDist(p, hb) <= Math.max(34, Math.min(64, hb.len * 0.3)) || pxDist(p, scene.courtToScreen(hp[0], hp[1], 25)) <= 44;
+    if (!onHolder) {
       // Fuera del poseedor: el arrastre gira la cámara; un toque suelto solo muestra la pista
       const o = scene.getOrbit();
-      G.orbit = { x0: p.x, y0: p.y, yaw0: o.goalYaw, pitch0: o.goalPitch, active: false };
+      G.orbit = { pid: e.pointerId, x0: p.x, y0: p.y, yaw0: o.goalYaw, pitch0: o.goalPitch, active: false };
       return;
     }
     G.drag = { kind: null };
+    G.dragInfo = { pid: e.pointerId, x0: p.x, y0: p.y, last: p, moved: false };
   });
   cv.addEventListener('pointermove', (e) => {
-    if (G.orbit) { orbitMove(toPx(e)); return; }
-    if (!G.drag) return;
-    G.drag = classify(toPx(e));
+    if (G.orbit) { if (e.pointerId === G.orbit.pid) orbitMove(toPx(e)); return; }
+    const gi = G.dragInfo;
+    if (!G.drag || !gi || e.pointerId !== gi.pid) return;
+    const p = toPx(e);
+    gi.last = p;
+    // Un toque con un temblor de pocos píxeles no es un arrastre
+    if (!gi.moved && Math.hypot(p.x - gi.x0, p.y - gi.y0) < DRAG_MIN) return;
+    gi.moved = true;
+    const prev = G.drag, d = classify(p);
+    G.drag = d;
+    if (d.kind !== prev.kind || d.to !== prev.to || d.aim !== prev.aim) {
+      setTip(dragTip(d));
+      // la mira "encaja": un toque de vibración donde el teléfono lo permite
+      if (d.kind === 'shot' && d.aim === 'in') { try { if (navigator.vibrate) navigator.vibrate(8); } catch (err) { /* nada */ } }
+    }
   });
   const endDrag = (e) => {
-    try { cv.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    const cancelled = e.type === 'pointercancel';
     if (G.orbit) {
+      if (e.pointerId !== G.orbit.pid) return;
+      try { cv.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
       const o = G.orbit;
       G.orbit = null;
-      if (!o.active) $('tipbar').textContent = 'Empieza desde el jugador que tiene la pelota (el del círculo amarillo). Arrastra fuera de él para girar la cámara.';
+      if (!o.active && !cancelled) setTip('Empieza en el jugador del círculo amarillo. Arrastrar fuera de él gira la cámara.');
       return;
     }
-    if (!G.drag) return;
+    const gi = G.dragInfo;
+    if (!G.drag || (gi && e.pointerId !== gi.pid)) return;
+    try { cv.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
     const d = G.drag;
-    G.drag = null;
+    G.drag = null; G.dragInfo = null;
+    // El sistema interrumpió el gesto (llamada, gesto del sistema): no se juega nada
+    if (cancelled) { baseTip(); return; }
     if (!d.kind) {
-      $('tipbar').textContent = 'Arrastra hacia un compañero, hacia un espacio libre o hacia el aro.';
+      if (gi && gi.moved) baseTip();
+      else setTip('Arrastra desde el jugador hacia un compañero, un espacio libre o el aro.');
       return;
     }
     let move;
@@ -1235,30 +1611,52 @@
       if (E.step(G.level, G.st, move).ok) return startCharge({ x: d.x, y: d.y });
     } else {
       const tgt = E.dribbleTarget(G.level, G.st, d.x, d.y);
-      if (tgt.len < E.DRIBBLE_MIN) { $('tipbar').textContent = 'No hay espacio para conducir hacia ahí.'; return; }
+      if (tgt.len < E.DRIBBLE_MIN) { setTip('No hay espacio para conducir hacia ahí.'); return; }
       move = { type: 'dribble', x: d.x, y: d.y };
     }
-    startMove(E.step(G.level, G.st, move));
+    const res = E.step(G.level, G.st, move);
+    // Tutorial: el gesto del nivel queda aprendido cuando sale bien (nivel 2: un pase; nivel 3: el pase a tu jugador)
+    if (res.ok && move.type === 'pass' && (G.idx === 1 || (G.idx === 2 && move.to === G.level.starIdx))) tutSeen('n' + (G.idx + 1));
+    startMove(res);
   };
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
 
   // ---------------------------------------------------------------- Medidor de fuerza del tiro
+  const CHARGE_MIN = 8;                                  // soltar por debajo de esto no es un tiro: fue un toque
   function startCharge(aim) {
-    const w = E.shotWindow(G.level, G.st);
-    G.charge = { w, aim, value: 0, dir: 1, pressing: false, last: 0, timer: 0 };
+    // La puntería queda fijada con la cámara de este momento (margen en píxeles incluido)
+    const info = aimInfo(aim);
+    const w = E.shotWindow(G.level, G.st, { aimTolMin: info.tol });
+    G.charge = { w, aim, info, level: info.level, value: 0, dir: 1, pressing: false, pid: null, last: 0, timer: 0 };
     G.mode = 'charge';
     $('meter-zone').style.top = (100 - (w.ideal + w.half)) + '%';
     $('meter-zone').style.height = (2 * w.half) + '%';
     $('meter-mark').style.top = '100%';
     $('meter-dist').textContent = (w.distance * 0.0417).toFixed(1).replace('.', ',') + ' m' + (w.pressure ? ' · marcado' : '');
-    // El medidor va sobre el borde derecho de la pantalla, centrado en su altura
-    const rc = cv.getBoundingClientRect();
-    $('meter-track').style.height = Math.round(Math.min(280, rc.height * 0.4)) + 'px';
     $('meter').hidden = false;
+    placeMeter();
     // La barra lleva su propio reloj para no depender del ritmo de dibujo de la escena
     G.charge.timer = setInterval(() => updateCharge(performance.now()), 16);
-    $('tipbar').textContent = 'Dirección fijada. Mantén presionado para cargar fuerza y suelta dentro de la zona verde.';
+    chargeTip();
+  }
+  function chargeTip() {
+    setTip(G.charge.level === 'in' ? 'Mantén presionado y suelta en la zona verde. ✕ cancela el tiro.'
+      : 'La línea va desviada: toca ✕ para apuntar de nuevo, o tira igual.');
+  }
+  // El medidor va en un borde de la pantalla, centrado en la zona libre entre las dos barras y sin
+  // pasarse de ella; del lado donde no tapa al tirador ni al aro (por defecto, a la derecha).
+  function placeMeter() {
+    const m = $('meter');
+    if (m.hidden) return;
+    const fa = freeArea(), free = Math.max(120, fa.bottom - fa.top);
+    $('meter-track').style.height = Math.round(Math.max(80, Math.min(240, free - 140))) + 'px';
+    const h = m.offsetHeight;
+    m.style.top = Math.round(fa.top + Math.max(0, (free - h) / 2)) + 'px';
+    const b = holderBody(), hs = scene.courtToScreen(HOOP.x, HOOP.y, HOOP_H);
+    const hw = Math.max(16, b.len * 0.32), band = 72;
+    const cost = (x0, x1) => (b.ok && b.f.x + hw > x0 && b.f.x - hw < x1 ? 2 : 0) + (hs.x + 26 > x0 && hs.x - 26 < x1 ? 1 : 0);
+    m.classList.toggle('left', cost(0, band) < cost(fa.w - band, fa.w));
   }
   // La barra sube y baja mientras se mantiene presionado. Un tirón del dispositivo (fotograma
   // lento) no puede hacer saltar la barra más de 25 ms de recorrido: así sigue siendo controlable.
@@ -1277,32 +1675,61 @@
     G.charge = null;
     $('meter').hidden = true;
   }
+  // Vuelve a planear sin tirar: no cuesta vida ni movimiento.
+  function cancelCharge() {
+    if (G.mode !== 'charge') return;
+    stopCharge();
+    G.mode = 'plan';
+    setTip('Tiro cancelado. Elige tu movimiento.');
+  }
+  // Deja de cargar sin tirar (toque demasiado corto o gesto interrumpido por el sistema).
+  function resetPress() {
+    const c = G.charge;
+    if (!c) return;
+    c.pressing = false; c.pid = null; c.value = 0; c.dir = 1;
+    $('meter-mark').style.top = '100%';
+  }
   function releaseCharge() {
     const c = G.charge;
     if (!c || !c.pressing) return;
-    const power = c.value;
+    // Un toque suelto no llega a cargar nada: no se tira (ni se pierde una vida por accidente)
+    if (c.value < CHARGE_MIN) { resetPress(); setTip('Mantén presionado para cargar la fuerza. ✕ cancela el tiro.'); return; }
+    const power = c.value, aim = c.aim, aimTolMin = c.info.tol;
     stopCharge();
-    startMove(E.step(G.level, G.st, { type: 'shot', power, aim: c.aim }));
+    startMove(E.step(G.level, G.st, { type: 'shot', power, aim, aimTolMin }));
   }
   stage.addEventListener('pointerdown', (e) => {
     if (G.mode !== 'charge' || !$('modal').hidden) return;
+    if (G.charge.pressing) return;                       // un segundo dedo no reinicia la carga
     try { stage.setPointerCapture(e.pointerId); } catch (err) { /* nada */ }
     G.charge.pressing = true;
+    G.charge.pid = e.pointerId;
     G.charge.last = performance.now();
+    chargeTip();
     e.preventDefault();
   });
   const endCharge = (e) => {
-    if (G.mode !== 'charge') return;
+    if (G.mode !== 'charge' || !G.charge.pressing || e.pointerId !== G.charge.pid) return;
     try { stage.releasePointerCapture(e.pointerId); } catch (err) { /* nada */ }
+    if (e.type === 'pointercancel') { resetPress(); return; }
     releaseCharge();
   };
   stage.addEventListener('pointerup', endCharge);
   stage.addEventListener('pointercancel', endCharge);
+  // Botón ✕ del medidor: cancela el tiro ya apuntado (su toque no cuenta como "cargar")
+  $('btn-cancel-shot').addEventListener('pointerdown', (e) => e.stopPropagation());
+  $('btn-cancel-shot').onclick = cancelCharge;
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && current === 'game' && $('modal').hidden) cancelCharge(); });
 
   // Acceso de solo lectura para las pruebas automáticas (píxeles CSS relativos al canvas).
+  // aimInfo(aim?): puntería del poseedor actual hacia `aim` (por defecto, el centro del aro):
+  //   { tol, tolBase, tolMin, tolPx, ppu, err, level: 'in' | 'near' | 'out' | 'far', q }.
+  // tutorial(): { step: gesto que se está enseñando o null, hand: mano visible, coach: texto del cartel }.
   window.__jm = {
     scene, get G() { return G; }, get S() { return S; }, E, LEVELS,
     courtToScreen: (x, y, h) => scene.courtToScreen(x, y, h),
+    aimInfo: (aim) => aimInfo(aim),
+    tutorial: () => ({ step: tut.step, hand: !tutEl.hidden, coach: coach.hidden ? null : coach.textContent }),
   };
 
   // ---------------------------------------------------------------- Botones

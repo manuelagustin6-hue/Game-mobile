@@ -158,24 +158,41 @@
   .gbar.bottom {
     bottom: 0; flex-direction: column; gap: 6px;
     padding: 22px max(12px, env(safe-area-inset-right, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+  }
+  /* El fondo va en un seudoelemento para poder aclararlo: mientras se traza una conducción que
+     termina debajo de la barra, la barra se vuelve casi transparente y deja ver el destino. */
+  .gbar.bottom::before {
+    content: ''; position: absolute; inset: 0; z-index: -1; transition: opacity .15s ease;
     background: linear-gradient(to top, rgba(6,8,15,.9) 0%, rgba(6,8,15,.62) 65%, rgba(6,8,15,0) 100%);
   }
+  .gbar.bottom > * { transition: opacity .15s ease; }
+  .gbar.bottom.see-through::before { opacity: .18; }
+  .gbar.bottom.see-through > .movebar, .gbar.bottom.see-through > .controls { opacity: .25; }
   .gbar .icon-btn { width: 36px; height: 36px; border-radius: 11px; font-size: 17px; background: rgba(23,42,75,.78); border-color: rgba(255,255,255,.14); }
   .gbar .pill { padding: 4px 10px; font-size: 15px; background: rgba(23,42,75,.78); border-color: rgba(255,255,255,.14); }
   .lvl-label { font-family: var(--display); font-weight: 700; font-size: 15px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.05; min-width: 0; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
   .lvl-label small { display: block; font-family: var(--body); font-weight: 500; font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .movebar {
     display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
-    font-family: var(--display); font-weight: 600; font-size: 15px; text-transform: uppercase; letter-spacing: .03em;
+    font-family: var(--display); font-weight: 600; font-size: 17px; text-transform: uppercase; letter-spacing: .03em;
     font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px rgba(0,0,0,.7);
   }
-  .movebar b { font-size: 21px; font-weight: 800; color: var(--paper); }
-  .movebar .goal { color: var(--muted); font-size: 14px; }
+  .movebar b { font-size: 24px; font-weight: 800; color: var(--paper); }
+  .movebar .goal { color: var(--muted); font-size: 15px; white-space: nowrap; }
+  /* Ayuda de una o dos líneas, centrada en una caja de alto fijo (la barra no cambia de tamaño y
+     el encuadre de la cámara no salta). El texto va en un span que corta con puntos suspensivos. */
   .tipbar {
-    font-size: 13px; line-height: 1.3; height: 2.6em; overflow: hidden; color: #DCE4F0; text-align: center;
-    text-shadow: 0 1px 2px rgba(0,0,0,.8); padding-inline: 4px;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    --tip-lines: 2;
+    font-size: 13px; line-height: 1.3; height: calc(var(--tip-lines) * 1.3em); color: #DCE4F0; text-align: center;
+    text-shadow: 0 1px 2px rgba(0,0,0,.8); padding-inline: 6px;
+    display: flex; align-items: center; justify-content: center;
   }
+  .tipbar > span {
+    display: -webkit-box; -webkit-line-clamp: var(--tip-lines); -webkit-box-orient: vertical; overflow: hidden;
+    max-height: calc(var(--tip-lines) * 1.3em);
+  }
+  /* En teléfonos angostos entran menos letras por línea: la ayuda tiene una línea más */
+  @media (max-width: 374px) { .tipbar { --tip-lines: 3; } }
   .gbar .controls { display: flex; align-items: center; gap: 8px; }
   .gbar .controls .spacer { flex: 1; }
   .gbar .btn.small { font-size: 15px; padding: 8px 15px; border-radius: 999px; box-shadow: 0 3px 0 #0A1324; }
@@ -184,27 +201,35 @@
   .icon-btn.round { width: 40px; height: 40px; border-radius: 50%; color: var(--paper); transition: opacity .2s ease; }
   .icon-btn.round svg { width: 22px; height: 22px; display: block; }
   .icon-btn.round.off { opacity: .45; }
+  /* Cartel del poseedor: va al costado o debajo del jugador (game.js elige dónde no tapa a nadie)
+     y se apaga mientras se arrastra, para no tapar la línea que se está trazando. */
   .nametag {
-    position: absolute; transform: translate(-50%, -100%);
+    position: absolute; left: 0; top: 0;
     background: rgba(14,26,49,.88); color: var(--paper); border: 1px solid rgba(255,255,255,.12);
     font-weight: 700; font-size: 12px; line-height: 1; padding: 5px 9px; border-radius: 999px;
-    white-space: nowrap; pointer-events: none;
+    white-space: nowrap; pointer-events: none; transition: opacity .12s ease;
   }
-  .tipbar { font-size: 13px; color: var(--muted); text-align: center; min-height: 2.6em; display: flex; align-items: center; justify-content: center; padding-inline: 8px; }
-  .movebar {
-    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
-    font-family: var(--display); font-weight: 600; font-size: 17px; text-transform: uppercase; letter-spacing: .03em;
-    font-variant-numeric: tabular-nums;
-  }
-  .movebar b { font-size: 24px; font-weight: 800; color: var(--paper); }
-  .movebar .goal { color: var(--muted); font-size: 15px; }
+  .nametag.dim { opacity: 0; }
   .howto { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.35; }
   .howto b { color: var(--gold); font-weight: 600; }
+  /* Medidor de fuerza: game.js lo centra en la zona libre entre las dos barras (top en px) y elige
+     el lado donde no tapa al tirador. La animación de entrada solo cambia la opacidad: una que toque
+     transform pisaría la posición. */
   .meter {
-    position: absolute; right: max(8px, env(safe-area-inset-right, 0px)); top: 46%; transform: translateY(-50%);
-    width: 52px; display: flex; flex-direction: column; align-items: center; gap: 6px;
-    pointer-events: none; animation: rise .2s ease both;
+    position: absolute; right: max(8px, env(safe-area-inset-right, 0px)); top: 0;
+    width: 56px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 8px 0 6px; border-radius: 16px; background: rgba(6,8,15,.5);
+    pointer-events: none; animation: appear .2s ease both;
   }
+  .meter.left { right: auto; left: max(8px, env(safe-area-inset-left, 0px)); }
+  @keyframes appear { from { opacity: 0; } to { opacity: 1; } }
+  .meter-cancel {
+    pointer-events: auto; width: 40px; height: 40px; border-radius: 50%; margin-top: 4px;
+    background: rgba(14,26,49,.9); border: 1.5px solid rgba(255,255,255,.75); color: #fff;
+    font-size: 17px; font-weight: 700; line-height: 1; display: grid; place-items: center;
+    box-shadow: 0 3px 10px rgba(0,0,0,.45);
+  }
+  .meter-cancel:active { transform: scale(.92); }
   .meter-label, .meter-dist {
     font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); text-align: center; white-space: nowrap;
@@ -223,6 +248,67 @@
     position: absolute; left: -2px; right: -2px; height: 5px; margin-top: -2.5px;
     background: #fff; border-radius: 3px; box-shadow: 0 0 6px rgba(0,0,0,.6);
   }
+  /* Mira sobre el aro: el anillo mide el margen real de puntería; el punto, por dónde pasa la línea */
+  .aim-ring {
+    position: absolute; left: 0; top: 0; pointer-events: none; border-radius: 50%; box-sizing: border-box;
+    border: 2.5px solid var(--aim, #FFB02E); box-shadow: 0 0 0 1.5px rgba(6,8,15,.55), inset 0 0 0 1.5px rgba(6,8,15,.45);
+    transition: border-color .1s ease;
+  }
+  .aim-ring::before, .aim-ring::after { content: ''; position: absolute; border-radius: 1px; }
+  .aim-ring::before { left: 50%; top: -7px; bottom: -7px; width: 2px; margin-left: -1px; background: linear-gradient(var(--aim, #FFB02E) 0 7px, transparent 7px calc(100% - 7px), var(--aim, #FFB02E) calc(100% - 7px)); }
+  .aim-ring::after { top: 50%; left: -7px; right: -7px; height: 2px; margin-top: -1px; background: linear-gradient(90deg, var(--aim, #FFB02E) 0 7px, transparent 7px calc(100% - 7px), var(--aim, #FFB02E) calc(100% - 7px)); }
+  .aim-ring.in { animation: snap .22s cubic-bezier(.2,1.7,.4,1) both; border-width: 3.5px; box-shadow: 0 0 0 1.5px rgba(6,8,15,.55), 0 0 14px 2px rgba(75,227,143,.75); }
+  @keyframes snap { from { scale: 1.45; } to { scale: 1; } }
+  .aim-dot {
+    position: absolute; left: 0; top: 0; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    background: #fff; border: 2px solid var(--aim, #FFB02E); box-shadow: 0 0 0 1px rgba(6,8,15,.6); pointer-events: none; box-sizing: border-box;
+  }
+  /* Lupa: repite la zona del aro por encima del dedo, que la tapa */
+  .aim-lens { position: absolute; left: 0; top: 0; width: 84px; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .aim-lens canvas {
+    width: 84px; height: 84px; border-radius: 50%; display: block; background: #06080f;
+    border: 3px solid var(--aim, #FFB02E); box-shadow: 0 6px 18px rgba(0,0,0,.55), 0 0 0 1.5px rgba(6,8,15,.6); box-sizing: border-box;
+  }
+  .aim-lens span {
+    font-family: var(--display); font-weight: 800; font-size: 13px; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap;
+    color: #0B1220; background: var(--aim, #FFB02E); padding: 2px 8px; border-radius: 999px; box-shadow: 0 2px 6px rgba(0,0,0,.45);
+  }
+  /* Destino de la conducción: va por encima de las barras para que nunca quede tapado */
+  .drib-pin { position: absolute; left: 0; top: 0; z-index: 3; width: 0; height: 0; pointer-events: none; }
+  .drib-pin::before {
+    content: ''; position: absolute; left: -13px; top: -40px; width: 26px; height: 26px; box-sizing: border-box;
+    border-radius: 50% 50% 50% 0; rotate: -45deg; background: #2EE6A0; border: 2.5px solid #06281C;
+    box-shadow: 0 3px 8px rgba(0,0,0,.5); animation: pin-bob .7s ease-in-out infinite alternate;
+  }
+  .drib-pin::after {
+    content: ''; position: absolute; left: -4px; top: -31px; width: 8px; height: 8px; border-radius: 50%; background: #06281C;
+    animation: pin-bob .7s ease-in-out infinite alternate;
+  }
+  @keyframes pin-bob { from { translate: 0 0; } to { translate: 0 -4px; } }
+  /* Tutorial: mano fantasma que repite el gesto y cartel de consejo */
+  .tut { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .tut-trail {
+    position: absolute; left: 0; top: 0; height: 5px; margin-top: -2.5px; transform-origin: 0 50%; border-radius: 3px;
+    background: repeating-linear-gradient(90deg, rgba(255,255,255,.95) 0 9px, transparent 9px 16px);
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.7));
+  }
+  .tut-ring {
+    position: absolute; left: 0; top: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; box-sizing: border-box;
+    border: 3px solid #fff; background: rgba(255,255,255,.22); box-shadow: 0 0 0 1.5px rgba(6,8,15,.45);
+  }
+  .tut-hand { position: absolute; left: 0; top: 0; width: 46px; height: 58px; margin: -3px 0 0 -21px; filter: drop-shadow(0 4px 6px rgba(0,0,0,.55)); }
+  .tut-hand svg { width: 100%; height: 100%; display: block; }
+  .coach {
+    position: absolute; left: 12px; right: 12px; top: 0; width: fit-content; margin-inline: auto;
+    display: flex; align-items: center; gap: 8px; pointer-events: none;
+    background: rgba(14,26,49,.92); border: 1px solid rgba(255,197,61,.7); color: var(--paper);
+    font-weight: 600; font-size: 13.5px; line-height: 1.2; padding: 8px 14px; border-radius: 16px; text-align: center;
+    box-shadow: 0 6px 16px rgba(0,0,0,.45); animation: appear .25s ease both;
+  }
+  .coach .swipe { flex: none; width: 34px; height: 16px; position: relative; }
+  .coach .swipe::before { content: ''; position: absolute; left: 0; right: 0; top: 7px; height: 2px; background: rgba(255,255,255,.35); border-radius: 1px; }
+  .coach .swipe::after { content: ''; position: absolute; left: 0; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--gold); animation: swipe 1.5s ease-in-out infinite alternate; }
+  @keyframes swipe { from { translate: 0 0; } to { translate: 22px 0; } }
   .float-msg {
     position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
     font-family: var(--display); font-weight: 800; font-size: 54px; text-transform: uppercase;
@@ -387,10 +473,20 @@
     <div class="stage" id="stage">
       <canvas id="court"></canvas>
       <div class="nametag" id="nametag" hidden></div>
-      <div class="meter" id="meter" hidden aria-live="polite">
+      <div class="aim-ring" id="aim-ring" hidden></div>
+      <div class="aim-dot" id="aim-dot" hidden></div>
+      <div class="tut" id="tut" hidden aria-hidden="true">
+        <div class="tut-trail" id="tut-trail"></div>
+        <div class="tut-ring" id="tut-ring"></div>
+        <div class="tut-hand" id="tut-hand"><svg viewBox="0 0 46 58"><path d="M16 5.5a5.2 5.2 0 0 1 10.4 0V24l11 2.9a6.4 6.4 0 0 1 4.8 6.2V41c0 8.3-6.2 14.5-14.5 14.5h-5.2c-5 0-8.6-2.3-11.6-6.4L3.6 38.3a4.3 4.3 0 0 1 6.7-5.3L16 39.2z" fill="#fff" stroke="#0E1A31" stroke-width="2.4" stroke-linejoin="round"/></svg></div>
+      </div>
+      <div class="coach" id="coach" hidden></div>
+      <div class="aim-lens" id="aim-lens" hidden aria-hidden="true"><canvas id="aim-lens-cv" width="168" height="168"></canvas><span id="aim-lens-label"></span></div>
+      <div class="meter" id="meter" hidden>
         <div class="meter-label">Fuerza</div>
         <div class="meter-dist" id="meter-dist"></div>
         <div class="meter-track" id="meter-track"><div class="meter-zone" id="meter-zone"></div><div class="meter-mark" id="meter-mark"></div></div>
+        <button class="meter-cancel" id="btn-cancel-shot" aria-label="Cancelar el tiro" title="Cancelar el tiro">✕</button>
       </div>
     </div>
     <div class="gbar top" id="game-top">
@@ -402,7 +498,7 @@
     </div>
     <div class="gbar bottom" id="game-bottom">
       <div class="movebar" id="movebar"></div>
-      <div class="tipbar" id="tipbar"></div>
+      <div class="tipbar" id="tipbar" aria-live="polite"><span id="tiptext"></span></div>
       <div class="controls">
         <button class="btn alt small" id="btn-reset">Reiniciar</button>
         <button class="btn gold small" id="btn-hint">Ayuda · 30</button>
@@ -412,6 +508,7 @@
         </button>
       </div>
     </div>
+    <div class="drib-pin" id="drib-pin" hidden></div>
   </section>
 </div>
 

@@ -19,6 +19,7 @@
   const SHOT_TIME = 0.8;      // duración del tiro (s)
   const DEFAULT_RANGE = 210;  // distancia máxima de tiro (línea de triple)
   const MAX_DEPTH = 5;        // movimientos que prueba el buscador de soluciones
+  const AIM_TOL_FAR = 5;      // margen lateral de puntería (unidades) en el peor caso: tiro al límite del alcance, sin entrenar
 
   const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 
@@ -95,7 +96,10 @@
   // lado y velocidad de la barra. Más lejos → más fuerza, menos margen y barra más rápida;
   // un defensor cerca achica el margen (un pívot presiona desde más lejos, en proporción a su
   // `block`); entrenar Tiro (solo tu jugador) lo agranda y frena la barra.
-  function shotWindow(level, st) {
+  // opts.aimTolMin (opcional, unidades): piso del margen lateral de puntería. Lo calcula la
+  // interfaz según lo que se ve en pantalla (con la cámara lejos, pocas unidades son muy pocos
+  // píxeles); el margen final es el mayor entre el propio del tiro (aimTolBase) y ese piso.
+  function shotWindow(level, st, opts) {
     const a = st.pos[st.holder];
     const d = dist(a[0], a[1], HOOP.x, HOOP.y);
     const range = rangeFor(level, st.holder);
@@ -110,14 +114,31 @@
     const pressure = near < PRESSURE_R;
     let half = 11 - 5 * far + 2.5 * skill;
     if (pressure) half -= 3 * (1 - near / PRESSURE_R);
+    // margen lateral (unidades) para que la línea pase por el aro: la distancia lo achica y
+    // entrenar Tiro lo agranda
+    const aimTolBase = Math.max(3, 9 - 4 * far + 2 * skill);
+    const aimTolMin = (opts && opts.aimTolMin) || 0;
     return {
       ideal: 38 + 50 * far,
       half: Math.max(4, half),
       speed: 70 + 40 * far - 8 * skill,
-      aimTol: Math.max(3, 9 - 4 * far + 2 * skill), // margen lateral (unidades) para que la línea pase por el aro
+      aimTol: Math.max(aimTolBase, aimTolMin),
+      aimTolBase,
       distance: d,
       pressure,
     };
+  }
+
+  // Error lateral de puntería (unidades): distancia del centro del aro a la recta que sale del
+  // tirador `a` y pasa por el punto apuntado `aim`. Devuelve también el punto de esa recta más
+  // cercano al aro (por dónde "pasa" el tiro). Una línea de menos de 20 unidades no se juzga.
+  function aimError(a, aim) {
+    const vx = aim.x - a.x, vy = aim.y - a.y;
+    const len = Math.hypot(vx, vy);
+    if (len <= 20) return { err: 0, x: HOOP.x, y: HOOP.y, len };
+    const t = ((HOOP.x - a.x) * vx + (HOOP.y - a.y) * vy) / (len * len);
+    const qx = a.x + vx * t, qy = a.y + vy * t;
+    return { err: dist(qx, qy, HOOP.x, HOOP.y), x: qx, y: qy, len };
   }
 
   // ¿Algún defensor alcanza la pelota mientras viaja de a a b entre t0 y t0+dur?
@@ -136,7 +157,8 @@
     return null;
   }
 
-  // Ejecuta un movimiento. move = {type:'pass', to} | {type:'dribble', x, y} | {type:'shot'}
+  // Ejecuta un movimiento. move = {type:'pass', to} | {type:'dribble', x, y} |
+  // {type:'shot', aim?, power?, aimTolMin?} (aimTolMin: piso del margen de puntería, ver shotWindow)
   // Devuelve el tramo animable, el resultado y el estado siguiente.
   function step(level, st, move) {
     const range = rangeFor(level, st.holder);
@@ -162,20 +184,16 @@
       // Puntería: si el movimiento trae aim (punto hacia donde se trazó la línea), la línea
       // que sale del tirador tiene que pasar cerca del centro del aro.
       // Sin aim ni power (buscador de soluciones, ayuda) el tiro se considera perfecto.
+      const win = shotWindow(level, st, { aimTolMin: move.aimTolMin });
       if (move.aim) {
-        const win = shotWindow(level, st);
-        const vx = move.aim.x - a.x, vy = move.aim.y - a.y;
-        const len = Math.hypot(vx, vy);
-        if (len > 20) {
-          const err = Math.abs(vx * (HOOP.y - a.y) - vy * (HOOP.x - a.x)) / len;
-          if (err > win.aimTol) {
-            const to = { x: a.x + (vx / len) * d, y: a.y + (vy / len) * d };
-            return { ok: false, reason: 'desviado', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to, aimError: err, window: win };
-          }
+        const e = aimError(a, move.aim);
+        if (e.err > win.aimTol) {
+          const vx = move.aim.x - a.x, vy = move.aim.y - a.y;
+          const to = { x: a.x + (vx / e.len) * d, y: a.y + (vy / e.len) * d };
+          return { ok: false, reason: 'desviado', leg: { type: 'shot', from: a, to, t0, t1: t0 + SHOT_TIME, miss: true }, failPos: to, aimError: e.err, window: win };
         }
       }
       if (move.power != null) {
-        const win = shotWindow(level, st);
         if (move.power < win.ideal - win.half) {
           const f = 0.82;
           const to = { x: a.x + (HOOP.x - a.x) * f, y: a.y + (HOOP.y - a.y) * f };
@@ -263,9 +281,9 @@
 
   const api = {
     COURT, HOOP, BALL_R, REACH, BLOCK_R, PRESSURE_R, SPEED, DRIBBLE_SPEED, DRIBBLE_MAX, DRIBBLE_MIN, BODY_R,
-    SHOT_TIME, DEFAULT_RANGE,
+    SHOT_TIME, DEFAULT_RANGE, AIM_TOL_FAR,
     dist, pointSegDist, defenderPos, defReach, defBlock, rangeFor, dribbleMaxFor, passSpeedFor,
-    initState, cloneState, dribbleTarget, shotWindow, step, simulate, solve, stars,
+    initState, cloneState, dribbleTarget, shotWindow, aimError, step, simulate, solve, stars,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Engine = api;
